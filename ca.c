@@ -23,7 +23,7 @@ int main() {
     // Read each character in each line, and displays it one at a time
     char c;
     while ((c=fgetc(file)) != EOF) {
-        putchar(c);
+        printf("%c", c);
     }
 
     // Close the file
