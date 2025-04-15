@@ -1,0 +1,3 @@
+/home/omar/Desktop/GitHub/ComputerSystemArchitecture/Milestone2/build/CMakeFiles/CASimulator.dir
+/home/omar/Desktop/GitHub/ComputerSystemArchitecture/Milestone2/build/CMakeFiles/edit_cache.dir
+/home/omar/Desktop/GitHub/ComputerSystemArchitecture/Milestone2/build/CMakeFiles/rebuild_cache.dir
