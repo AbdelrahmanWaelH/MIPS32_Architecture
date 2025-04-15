@@ -6,7 +6,7 @@ char* readFile(char* filepath) {
 	
 	FILE *file = fopen(filepath, "r");
 
-	char* outputBuffer = (char*)malloc(1024);
+	char* outputBuffer = (char*)malloc(16*4096);
 
 	if (file == NULL) {
 		printf("Error in opening file: %s", filepath);
