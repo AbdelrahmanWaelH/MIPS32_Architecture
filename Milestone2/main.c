@@ -21,6 +21,8 @@ struct Word mainMemory[MAIN_MEMORY_SIZE];
 struct Word registers[REGISTER_COUNT];
 struct Word programCounter;
 
+
+void parseTextInstruction(); // Parses the text instructions into their binary representation.
 void readFileToMemory(char* filepath);
 void initRegisters();
 void initMemory();
