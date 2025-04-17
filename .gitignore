@@ -52,3 +52,7 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+Milestone2/build/CASimulator
+Milestone2/build/CMakeFiles/CASimulator.dir/compiler_depend.internal
+Milestone2/build/CMakeFiles/CASimulator.dir/compiler_depend.make
+Milestone2/build/CASimulator
