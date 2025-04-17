@@ -23,6 +23,14 @@ struct Word {
     enum InstructionFormat format;
 };
 
+struct Pipeline {
+    struct Word fetchPhaseInst;
+    struct Word decodePhaseInst;
+    struct Word executePhaseInst;
+    struct Word memoryPhaseInst;
+    struct Word writebackPhaseInst;
+};
+
 
 
 char lines[MAX_LINES][MAX_INSTRUCTION_TOKENS]; //An array to hold the text instructions after reading from file
@@ -31,6 +39,7 @@ int lineCount = 0;
 struct Word mainMemory[MAIN_MEMORY_SIZE];
 struct Word registers[REGISTER_COUNT];
 struct Word programCounter;
+struct Pipeline pipeline;
 
 void printBinary(unsigned int num) {
 
@@ -99,6 +108,7 @@ void decode();
 void execute();
 void memory();
 void writeBack();
+void handleHazards();
 
 int main(){
 
@@ -114,6 +124,36 @@ int main(){
     printMainMemory();
 
     // printf("\nLine Count: %d", lineCount);
+
+}
+
+void initRegisters(){
+    for(int i = 0; i < REGISTER_COUNT; i++){
+        struct Word word;
+        word.word = 0;
+        word.format = R_FORMAT;
+        registers[i] = word;
+    }
+}
+
+
+void initMemory(){
+    for(int i = 0; i < MAIN_MEMORY_SIZE; i++){
+        struct Word word;
+        word.word = 0;
+        word.format = R_FORMAT;
+        mainMemory[i] = word;
+    }
+}
+
+
+void initPipeline(){
+
+    pipeline.fetchPhaseInst = (struct Word) {0};
+    pipeline.decodePhaseInst = (struct Word) {0};
+    pipeline.executePhaseInst= (struct Word) {0};
+    pipeline.memoryPhaseInst = (struct Word) {0};
+    pipeline.writebackPhaseInst = (struct Word) {0};
 
 }
 
