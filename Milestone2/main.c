@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define MAIN_MEMORY_SIZE 2048
 #define WORD_SIZE 32
@@ -23,12 +24,19 @@ struct Word {
     enum InstructionFormat format;
 };
 
+struct PipelinePhase {
+    struct Word instruction;
+    int clocksRemaining;
+    bool isComplete;
+    bool isReady;
+};
+
 struct Pipeline {
-    struct Word fetchPhaseInst;
-    struct Word decodePhaseInst;
-    struct Word executePhaseInst;
-    struct Word memoryPhaseInst;
-    struct Word writebackPhaseInst;
+    struct PipelinePhase fetchPhaseInst;
+    struct PipelinePhase decodePhaseInst;
+    struct PipelinePhase executePhaseInst;
+    struct PipelinePhase memoryPhaseInst;
+    struct PipelinePhase writebackPhaseInst;
 };
 
 
@@ -40,6 +48,55 @@ struct Word mainMemory[MAIN_MEMORY_SIZE];
 struct Word registers[REGISTER_COUNT];
 struct Word programCounter;
 struct Pipeline pipeline;
+int cycle = 1;
+
+char* printOpcodeToName(int instruction){
+
+    if (instruction == 0) return "----";
+    int code = instruction >> 28;
+    switch (code)
+    {
+    case 0:
+        return ("ADD");
+        break;
+    case 1:
+        return ("SUB");
+        break;
+    case 2:
+        return ("MULI");
+        break;
+    case 3:
+        return ("ADDI");
+        break;
+    case 4:
+        return ("BNE");
+        break;
+    case 5:
+        return ("ANDI");
+        break;
+    case 6:
+        return ("ORI");
+        break;
+    case 7:
+        return ("J");
+        break;
+    case 8:
+        return ("SLL");
+        break;
+    case 9:
+        return ("SRL");
+        break;
+    case 10:
+        return ("LW");
+        break;
+    case 11:
+        return ("SW");
+        break;
+    default:
+        return ("UNKNOWN OPCODE");
+        break;
+    }
+}
 
 void printBinary(unsigned int num) {
 
@@ -97,12 +154,33 @@ void printMainMemory(){
     }
 }
 
+void printPipeline(){
+
+    printf("F    D    E    M    W\n");
+    printf("%s %s %s %s %s\n", 
+        printOpcodeToName(pipeline.fetchPhaseInst.instruction.word),
+        printOpcodeToName(pipeline.decodePhaseInst.instruction.word),
+        printOpcodeToName(pipeline.executePhaseInst.instruction.word),
+        printOpcodeToName(pipeline.memoryPhaseInst.instruction.word),
+        printOpcodeToName(pipeline.writebackPhaseInst.instruction.word));
+    // printf("Remaining:\nF D E M W\n");
+    // printf("%d %d %d %d %d\n",
+    //     pipeline.fetchPhaseInst.clocksRemaining,
+    //     pipeline.decodePhaseInst.clocksRemaining,
+    //     pipeline.executePhaseInst.clocksRemaining,
+    //     pipeline.memoryPhaseInst.clocksRemaining,
+    //     pipeline.writebackPhaseInst.clocksRemaining
+    // );
+
+}
+
 
 void parseTextInstruction(); // Parses the text instructions into their binary representation.
 void readFileToMemory(char* filepath);
 void initRegisters();
 void initMemory();
 void initPipeline();
+void updatePipeline();
 void fetch();
 void decode();
 void execute();
@@ -114,6 +192,10 @@ int main(){
 
     readFileToMemory(filepath);
 
+    initRegisters();
+    initPipeline();
+    initMemory();
+
     for(int i = 0; i < MAX_LINES; i++){
         printf("%s\n", lines[i]);
         if(strcmp(lines[i], "[END]") == 0) break;
@@ -122,6 +204,21 @@ int main(){
     parseTextInstruction();
 
     printMainMemory();
+    printf("=====================\n");
+
+
+
+    for (int i = 0; i < lineCount; i++){
+
+        updatePipeline();
+
+        printf("==== Cycle %d ====\n", cycle);
+        printPipeline();
+        cycle++;
+        
+
+    }
+
 
     // printf("\nLine Count: %d", lineCount);
 
@@ -149,14 +246,164 @@ void initMemory(){
 
 void initPipeline(){
 
-    pipeline.fetchPhaseInst = (struct Word) {0};
-    pipeline.decodePhaseInst = (struct Word) {0};
-    pipeline.executePhaseInst= (struct Word) {0};
-    pipeline.memoryPhaseInst = (struct Word) {0};
-    pipeline.writebackPhaseInst = (struct Word) {0};
+    pipeline.fetchPhaseInst = (struct PipelinePhase) {.instruction = {0}, .clocksRemaining = 0, .isComplete = true, .isReady = true};
+    pipeline.decodePhaseInst = (struct PipelinePhase) {.instruction = {0}, .clocksRemaining = 0, .isComplete = true, .isReady = true};
+    pipeline.executePhaseInst= (struct PipelinePhase) {.instruction = {0}, .clocksRemaining = 0, .isComplete = true, .isReady = true};
+    pipeline.memoryPhaseInst = (struct PipelinePhase) {.instruction = {0}, .clocksRemaining = 0, .isComplete = true, .isReady = true};
+    pipeline.writebackPhaseInst = (struct PipelinePhase) {.instruction = {0}, .clocksRemaining = 0, .isComplete = true, .isReady = true};
+
+
 
 }
 
+void updatePipeline(){
+
+
+    
+
+    //Update Writeback
+
+    if(pipeline.writebackPhaseInst.isComplete){
+
+        if(pipeline.memoryPhaseInst.isComplete && pipeline.memoryPhaseInst.instruction.word != 0){
+
+            pipeline.writebackPhaseInst.instruction = pipeline.memoryPhaseInst.instruction;
+            pipeline.writebackPhaseInst.clocksRemaining = 1;
+            pipeline.writebackPhaseInst.isComplete = false;
+            pipeline.memoryPhaseInst.instruction = (struct Word){0};
+
+
+        } else {
+
+            pipeline.writebackPhaseInst.instruction = (struct Word){0};
+            pipeline.writebackPhaseInst.isComplete = true;
+
+        }
+
+    }
+
+    //Update Memory
+
+    if(pipeline.memoryPhaseInst.isComplete){
+
+        if(pipeline.executePhaseInst.isComplete && pipeline.executePhaseInst.instruction.word != 0){
+
+            pipeline.memoryPhaseInst.instruction = pipeline.executePhaseInst.instruction;
+            pipeline.memoryPhaseInst.clocksRemaining = 1;
+            pipeline.memoryPhaseInst.isComplete = false;
+            pipeline.executePhaseInst.instruction = (struct Word){0};
+
+
+        } else {
+
+            pipeline.memoryPhaseInst.instruction = (struct Word){0};
+            pipeline.memoryPhaseInst.isComplete = true;
+
+        }
+
+    }
+
+    //Update Execute
+
+    if(pipeline.executePhaseInst.isComplete){
+
+        if(pipeline.decodePhaseInst.isComplete && pipeline.decodePhaseInst.instruction.word != 0){
+
+            pipeline.executePhaseInst.instruction = pipeline.decodePhaseInst.instruction;
+            pipeline.executePhaseInst.clocksRemaining = 2;
+            pipeline.executePhaseInst.isComplete = false;
+            pipeline.decodePhaseInst.instruction = (struct Word){0};
+
+
+        } else {
+
+            pipeline.executePhaseInst.instruction = (struct Word){0};
+            pipeline.executePhaseInst.isComplete = true;
+
+        }
+
+    }
+
+
+    //Update Decode
+
+    if(pipeline.decodePhaseInst.isComplete){
+
+        if(pipeline.fetchPhaseInst.isComplete && pipeline.fetchPhaseInst.instruction.word != 0){
+
+            pipeline.decodePhaseInst.instruction = pipeline.fetchPhaseInst.instruction;
+            pipeline.decodePhaseInst.clocksRemaining = 2;
+            pipeline.decodePhaseInst.isComplete = false;
+            pipeline.fetchPhaseInst.instruction = (struct Word){0};
+
+        } else {
+
+            pipeline.decodePhaseInst.instruction = (struct Word){0};
+            pipeline.decodePhaseInst.isComplete = true;
+
+        }
+
+    }
+
+    //Update Fetch
+
+    if(cycle % 2 == 1){
+
+        fetch();
+
+    }
+
+    if(pipeline.fetchPhaseInst.clocksRemaining > 0)
+    pipeline.fetchPhaseInst.clocksRemaining--;
+
+    if(pipeline.decodePhaseInst.clocksRemaining > 0)
+    pipeline.decodePhaseInst.clocksRemaining--;
+
+    if(pipeline.executePhaseInst.clocksRemaining > 0)
+    pipeline.executePhaseInst.clocksRemaining--;
+
+    if(pipeline.memoryPhaseInst.clocksRemaining > 0)
+    pipeline.memoryPhaseInst.clocksRemaining--;
+
+    if(pipeline.writebackPhaseInst.clocksRemaining > 0)
+    pipeline.writebackPhaseInst.clocksRemaining--;
+
+    if(pipeline.fetchPhaseInst.clocksRemaining == 0) {
+        pipeline.fetchPhaseInst.isComplete = true;
+        pipeline.fetchPhaseInst.clocksRemaining = 0;
+    }
+    if(pipeline.decodePhaseInst.clocksRemaining == 0) {
+        pipeline.decodePhaseInst.isComplete = true;
+        pipeline.decodePhaseInst.clocksRemaining = 0;
+
+    }
+    if(pipeline.executePhaseInst.clocksRemaining == 0) {
+        pipeline.executePhaseInst.isComplete = true;
+        pipeline.executePhaseInst.clocksRemaining = 0;
+    }
+    if(pipeline.memoryPhaseInst.clocksRemaining == 0) {
+        pipeline.memoryPhaseInst.isComplete = true;
+        pipeline.memoryPhaseInst.clocksRemaining = 0;
+    }
+    if(pipeline.writebackPhaseInst.clocksRemaining == 0) {
+        pipeline.writebackPhaseInst.isComplete = true;
+        pipeline.writebackPhaseInst.clocksRemaining = 0;
+
+    }
+
+
+}
+
+void fetch(){
+
+
+    pipeline.fetchPhaseInst.instruction = mainMemory[programCounter.word];
+    programCounter.word+=1;
+
+    pipeline.fetchPhaseInst.isComplete = false;
+    pipeline.fetchPhaseInst.clocksRemaining = 1;
+
+}
 
 
 void parseTextInstruction(){
