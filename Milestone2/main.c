@@ -103,12 +103,71 @@ void readFileToMemory(char* filepath);
 void initRegisters();
 void initMemory();
 void initPipeline();
-void fetch();
-void decode();
-void execute();
-void memory();
-void writeBack();
+void fetchAddress(int pcAddress){
+    if (pcAddress < lineCount){
+       if (pcAddress%2 == 0){
+        pipeline.fetchPhaseInst = mainMemory[pcAddress];
+       } //we only fetch every other cycle
+    } else {
+        pipeline.fetchPhaseInst = (struct Word) { .word = 0, .format = INVALID_FORMAT};
+    }
+}
+void fetch(){
+    if (programCounter.word < lineCount){
+       if (programCounter.word%2 == 0){
+        pipeline.fetchPhaseInst = mainMemory[programCounter.word];
+       } //we only fetch every other cycle
+    } else {
+        pipeline.fetchPhaseInst = (struct Word) { .word = 0, .format = INVALID_FORMAT};
+    }
+}
+void decode(){
+    pipeline.decodePhaseInst = pipeline.fetchPhaseInst;
+}
+void execute(){
+    pipeline.executePhaseInst = pipeline.decodePhaseInst;
+}
+void memory(){
+    pipeline.memoryPhaseInst = pipeline.executePhaseInst;
+}
+void writeBack(){
+    if (programCounter.word%2 == 0){
+        pipeline.writebackPhaseInst = pipeline.executePhaseInst;
+    } else {
+        pipeline.writebackPhaseInst = pipeline.memoryPhaseInst;
+    }
+}
 void handleHazards();
+
+struct InstructionParts {
+    char opcode[4];
+    int rd, rs, rt, imm, shamt, address;
+    enum InstructionFormat format;
+};
+
+void parseInstruction(struct Word instruction){
+    int opcode = 0;
+    int r1 = 0;
+    int r2 = 0;
+    int r3 = 0;
+    int shamt = 0;
+    int imm = 0;
+    int address = 0;
+    struct Word r1val;
+    struct Word r2val;
+    struct Word r3val;
+    
+    opcode = (instruction.word & 0xF0000000)>>28;
+    r1 = (instruction.word & 0x0F800000)>>23;
+    r2 = (instruction.word & 0x007C0000)>>18;
+    r3 = (instruction.word & 0x0003E000)>>13;
+    shamt = (instruction.word & 0x00001FFF);
+    imm = (instruction.word & 0x0003FFFF);
+    address = (instruction.word & 0x0FFFFFFF);  
+    // TODO: assign register values
+
+
+};
 
 int main(){
 
@@ -302,6 +361,31 @@ void parseTextInstruction(){
     // printf("Token 3: %s\n", tokens[2]);
     // printf("Token 4: %s\n", tokens[3]); 
 
+}
+//MARK: PIPELINE
+//IF, ID, EX, WB even cycles
+//OR
+//ID, EX, MEM, WB odd cycles
+void runPipeline(){
+    initRegisters();
+    initPipeline();
+
+    int done = 0;
+
+    while (!done) {
+        writeBack();
+        memory();
+        execute();
+        decode();
+        fetch(programCounter.word);
+        if (pipeline.fetchPhaseInst.format != INVALID_FORMAT){
+            programCounter.word++;
+        }
+        if (pipeline.fetchPhaseInst.format == INVALID_FORMAT || pipeline.decodePhaseInst.format == INVALID_FORMAT){
+            break;
+        }
+        
+    }
 }
 
 
