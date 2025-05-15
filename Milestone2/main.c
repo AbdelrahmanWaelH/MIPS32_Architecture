@@ -10,6 +10,7 @@
 #define MAX_INSTRUCTION_TOKENS 256
 
 char* filepath = "test.txt";
+int fetchReady = 1; //0 for fetch ready, 1 for fetch not ready
 
 enum InstructionFormat {
     R_FORMAT,
@@ -29,9 +30,14 @@ struct Pipeline {
     struct Word executePhaseInst;
     struct Word memoryPhaseInst;
     struct Word writebackPhaseInst;
+    struct InstructionParts decodedParts;
 };
 
-
+struct InstructionParts {
+    int opcode, r1, r2, r3, imm, shamt, address;
+    struct Word r1val, r2val, r3val;
+    enum InstructionFormat format;
+};
 
 char lines[MAX_LINES][MAX_INSTRUCTION_TOKENS]; //An array to hold the text instructions after reading from file
 int lineCount = 0;
@@ -103,28 +109,47 @@ void readFileToMemory(char* filepath);
 void initRegisters();
 void initMemory();
 void initPipeline();
-void fetchAddress(int pcAddress){
-    if (pcAddress < lineCount){
-       if (pcAddress%2 == 0){
-        pipeline.fetchPhaseInst = mainMemory[pcAddress];
-       } //we only fetch every other cycle
-    } else {
-        pipeline.fetchPhaseInst = (struct Word) { .word = 0, .format = INVALID_FORMAT};
-    }
-}
 void fetch(){
-    if (programCounter.word < lineCount){
-       if (programCounter.word%2 == 0){
+    if (fetchReady && programCounter.word < MAIN_MEMORY_SIZE) {
         pipeline.fetchPhaseInst = mainMemory[programCounter.word];
-       } //we only fetch every other cycle
     } else {
-        pipeline.fetchPhaseInst = (struct Word) { .word = 0, .format = INVALID_FORMAT};
+        pipeline.fetchPhaseInst = (struct Word) { .word=0, .format = INVALID_FORMAT};
     }
 }
+
 void decode(){
-    pipeline.decodePhaseInst = pipeline.fetchPhaseInst;
+    struct Word instruction = pipeline.fetchPhaseInst;
+    struct InstructionParts parts;
+    parts.opcode = (instruction.word & 0xF0000000) >> 28;
+    parts.r1 = (instruction.word & 0x0F800000) >> 23;
+    parts.r2 = (instruction.word & 0x007C0000) >> 18;
+    parts.r3 = (instruction.word & 0x0003E000) >> 13;
+    parts.shamt = (instruction.word & 0x00001FFF);
+    parts.imm = (instruction.word & 0x0003FFFF);
+    parts.address = (instruction.word & 0x0FFFFFFF);  
+    parts.r1val = registers[parts.r1];
+    parts.r2val = registers[parts.r2];
+    parts.r3val = registers[parts.r3];
+    //hand off data to the next stage
+    pipeline.decodePhaseInst = instruction;
+    pipeline.decodedParts = parts;
 }
 void execute(){
+    struct InstructionParts parts = pipeline.decodedParts;
+    switch(parts.opcode){
+        case 0:  parts.r1val.word = parts.r2val.word + parts.r3val.word; break; //ADD R1 R2 R3 should use WB
+        case 1:  parts.r1val.word = parts.r2val.word - parts.r3val.word; break; //SUB R1 R2 R3 should use WB
+        case 2:  parts.r1val.word = parts.r2val.word * parts.imm; break; //MULI should use WB
+        case 3:  parts.r1val.word = parts.r2val.word + parts.imm; break; //ADDI should use WB
+        case 4:  if (parts.r1val.word != parts.r2val.word){ programCounter.word = programCounter.word + 1 + parts.imm;} break; //BNE
+        case 5:  parts.r1val.word = parts.r2val.word & parts.imm; break; //ANDI should use WB
+        case 6:  parts.r1val.word = parts.r2val.word | parts.imm; break; //ORI should use WB
+        case 7:  programCounter.word = (programCounter.word & 0xF0000000) | (parts.address & 0x0FFFFFFF); //PC = PC[31:28] + ADDRESS (28b)
+        case 8:  parts.r1val.word = parts.r2val.word << parts.shamt; break; //SLL should use WB
+        case 9:  parts.r1val.word = parts.r2val.word >> parts.shamt; break; //SRL should use WB
+        case 10: parts.r1val = mainMemory[parts.r2val.word + parts.imm]; break; //LW should use the MEM phase
+        case 11: mainMemory[parts.r2val.word + parts.imm] = parts.r1val; break; //SW should use the MEM phase
+    }
     pipeline.executePhaseInst = pipeline.decodePhaseInst;
 }
 void memory(){
@@ -139,35 +164,7 @@ void writeBack(){
 }
 void handleHazards();
 
-struct InstructionParts {
-    char opcode[4];
-    int rd, rs, rt, imm, shamt, address;
-    enum InstructionFormat format;
-};
 
-void parseInstruction(struct Word instruction){
-    int opcode = 0;
-    int r1 = 0;
-    int r2 = 0;
-    int r3 = 0;
-    int shamt = 0;
-    int imm = 0;
-    int address = 0;
-    struct Word r1val;
-    struct Word r2val;
-    struct Word r3val;
-    
-    opcode = (instruction.word & 0xF0000000)>>28;
-    r1 = (instruction.word & 0x0F800000)>>23;
-    r2 = (instruction.word & 0x007C0000)>>18;
-    r3 = (instruction.word & 0x0003E000)>>13;
-    shamt = (instruction.word & 0x00001FFF);
-    imm = (instruction.word & 0x0003FFFF);
-    address = (instruction.word & 0x0FFFFFFF);  
-    // TODO: assign register values
-
-
-};
 
 int main(){
 
@@ -207,13 +204,12 @@ void initMemory(){
 
 
 void initPipeline(){
-
     pipeline.fetchPhaseInst = (struct Word) {0};
     pipeline.decodePhaseInst = (struct Word) {0};
     pipeline.executePhaseInst= (struct Word) {0};
     pipeline.memoryPhaseInst = (struct Word) {0};
     pipeline.writebackPhaseInst = (struct Word) {0};
-
+    pipeline.decodedParts = (struct InstructionParts) {0};
 }
 
 
@@ -369,14 +365,15 @@ void parseTextInstruction(){
 void runPipeline(){
     initRegisters();
     initPipeline();
+    initMemory();
 
     int done = 0;
 
     while (!done) {
         writeBack();
         memory();
-        execute();
-        decode();
+        // execute();
+        // decode();
         fetch(programCounter.word);
         if (pipeline.fetchPhaseInst.format != INVALID_FORMAT){
             programCounter.word++;
