@@ -116,6 +116,7 @@ void fetch(){
     } else {
         pipeline.fetchPhaseInst = (struct Word) { .word=0, .format = INVALID_FORMAT};
     }
+    //the logic here is that it either hands off the right data when it's time, or nothing at all when we're in an _odd_ stage
 }
 
 void decode(){
@@ -142,14 +143,14 @@ void execute(){
         case 1:  parts.r1val.word = parts.r2val.word - parts.r3val.word; break; //SUB R1 R2 R3 should use WB
         case 2:  parts.r1val.word = parts.r2val.word * parts.imm; break; //MULI should use WB
         case 3:  parts.r1val.word = parts.r2val.word + parts.imm; break; //ADDI should use WB
-        case 4:  if (parts.r1val.word != parts.r2val.word){ programCounter.word = programCounter.word + 1 + parts.imm;} break; //BNE
+        case 4:  if (parts.r1val.word != parts.r2val.word){ parts.address = programCounter.word + 1 + parts.imm;} break; //BNE
         case 5:  parts.r1val.word = parts.r2val.word & parts.imm; break; //ANDI should use WB
         case 6:  parts.r1val.word = parts.r2val.word | parts.imm; break; //ORI should use WB
         case 7:  programCounter.word = (programCounter.word & 0xF0000000) | (parts.address & 0x0FFFFFFF); //PC = PC[31:28] + ADDRESS (28b)
         case 8:  parts.r1val.word = parts.r2val.word << parts.shamt; break; //SLL should use WB
         case 9:  parts.r1val.word = parts.r2val.word >> parts.shamt; break; //SRL should use WB
         case 10:  //LW should use the MEM phase
-        case 11: parts.address = parts.r1val.word + parts.imm; break; //SW should use the MEM phase, only address is being calculated here
+        case 11: parts.address = parts.r1val.word + parts.imm; break; //SW should use the MEM phase, only address is being computed here
         default: break;
     }
     pipeline.executePhaseInst = pipeline.decodePhaseInst;
@@ -161,31 +162,24 @@ void memory(){
         case 10: parts.r1val = mainMemory[parts.address]; break; //LW
         case 11: mainMemory[parts.address] = parts.r1val; break; //SW
         default: break;
-    }
+    } //performs the actual data transfer to memory
     pipeline.memoryPhaseInst = pipeline.executePhaseInst;
     pipeline.decodedParts = parts; //hand off updated parts
 }
 void writeBack(){
-    // if (programCounter.word%2 == 0){
-    //     pipeline.writebackPhaseInst = pipeline.executePhaseInst;
-    // } else {
-    //     pipeline.writebackPhaseInst = pipeline.memoryPhaseInst;
-    // }
     struct InstructionParts parts = pipeline.decodedParts;
     switch(parts.opcode){
-        case 0:
-        case 1:
-        case 2:
-        case 3:
-        case 4:
-        case 5:
-        case 6:
-        case 7:
-        case 8:
-        case 9:
-        case 10: registers[parts.r1] = parts.r1val; break; //all instructions with opcode 0-10 will use the WB stage
+        case 0: case 1: case 2: case 3: case 5: case 6: case 8: case 9: case 10: 
+        registers[parts.r1] = parts.r1val; break; //all instructions with opcode 0-10 will use the WB stage
+        case 4: programCounter.word = parts.address;//BNE, TODO store ADDRESS in programCounter
+        case 7: //JMP
         case 11: break; //11 doesn't really use this stage but we will keep it for lolz 
         default: break;
+    }
+    if (cycle%2 == 0){
+        pipeline.writebackPhaseInst = pipeline.executePhaseInst;
+    } else {
+        pipeline.writebackPhaseInst = pipeline.memoryPhaseInst;
     }
 }
 void handleHazards();
@@ -392,23 +386,15 @@ void runPipeline(){
     initRegisters();
     initPipeline();
     initMemory();
-
+    
     int done = 0;
-    int cycle = 0;
     int fetchWait = 0; //0 for ready, 1 waiting for memory
 
     while (!done) {
         writeBack();
         memory();
-        // execute();
-        // decode();
-        // fetch(programCounter.word);
-        // if (pipeline.fetchPhaseInst.format != INVALID_FORMAT){
-        //     programCounter.word++;
-        // }
-        // if (pipeline.fetchPhaseInst.format == INVALID_FORMAT || pipeline.decodePhaseInst.format == INVALID_FORMAT){
-        //     break;
-        // }
+        execute();
+        decode();
         if (fetchWait == 0) {
             fetch();
             if (pipeline.fetchPhaseInst.format != INVALID_FORMAT){
@@ -418,7 +404,6 @@ void runPipeline(){
         } else {
             fetchWait = 0; //MEM was used this cycle, so next cycle uses IF
         }
-
 
         cycle++;
     }
@@ -446,6 +431,3 @@ void readFileToMemory(char* filepath){
     //parseTextInstruction();
 
 }
-
-
-
