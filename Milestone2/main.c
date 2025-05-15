@@ -5,7 +5,7 @@
 
 #define MAIN_MEMORY_SIZE 2048
 #define WORD_SIZE 32
-#define REGISTER_COUNT 33
+#define REGISTER_COUNT 32
 #define MAX_LINES 64
 #define MAX_INSTRUCTION_TOKENS 256
 
@@ -170,7 +170,8 @@ void writeBack(){
     struct InstructionParts parts = pipeline.decodedParts;
     switch(parts.opcode){
         case 0: case 1: case 2: case 3: case 5: case 6: case 8: case 9: case 10: 
-        registers[parts.r1] = parts.r1val; break; //all instructions with opcode 0-10 will use the WB stage
+        if (parts.r1 != 0) {registers[parts.r1] = parts.r1val;} break; //all instructions with opcode 0-10 will use the WB stage
+        //prevents writing of the zero register
         case 4: programCounter.word = parts.address;//BNE, TODO store ADDRESS in programCounter
         case 7: //JMP
         case 11: break; //11 doesn't really use this stage but we will keep it for lolz 
