@@ -25,6 +25,11 @@ struct Word {
     enum InstructionFormat format;
 };
 
+struct InstructionParts {
+    int opcode, r1, r2, r3, imm, shamt, address;
+    struct Word r1val, r2val, r3val;
+    enum InstructionFormat format;
+};
 struct Pipeline {
     struct Word fetchPhaseInst;
     struct Word decodePhaseInst;
@@ -32,12 +37,6 @@ struct Pipeline {
     struct Word memoryPhaseInst;
     struct Word writebackPhaseInst;
     struct InstructionParts decodedParts;
-};
-
-struct InstructionParts {
-    int opcode, r1, r2, r3, imm, shamt, address;
-    struct Word r1val, r2val, r3val;
-    enum InstructionFormat format;
 };
 
 char lines[MAX_LINES][MAX_INSTRUCTION_TOKENS]; //An array to hold the text instructions after reading from file
