@@ -1,1 +1,0 @@
-/usr/bin/cc -Wl,--dependency-file=CMakeFiles/CASimulator.dir/link.d CMakeFiles/CASimulator.dir/main.c.o CMakeFiles/CASimulator.dir/FileReader.c.o -o CASimulator
