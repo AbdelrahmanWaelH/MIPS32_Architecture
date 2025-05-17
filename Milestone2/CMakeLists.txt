@@ -7,6 +7,8 @@ set(CMAKE_C_STANDARD 99)
 add_executable(CASimulator
     main.c
     FileReader.c
+#        run_tests.c
+
 )
 
 # If you use any special includes:

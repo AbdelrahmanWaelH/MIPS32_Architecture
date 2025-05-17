@@ -1,0 +1,4 @@
+ADDI R1 R0 100    // R1 = 100
+ADDI R2 R0 200    // R2 = 200
+SW R1 R0 0        // Store R1 to memory[0]
+LW R3 R0 0        // Load from memory[0] to R3 (structural hazard with fetch)
