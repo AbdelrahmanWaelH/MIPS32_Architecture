@@ -9,6 +9,7 @@
 #define REGISTER_COUNT 32
 #define MAX_LINES 64
 #define MAX_INSTRUCTION_TOKENS 256
+#define DATA_OFFSET 1024
 
 struct DecodedInstructionFields {
 
@@ -42,6 +43,7 @@ void initRegisters();
 void initMemory();
 void initPipeline();
 void runPipeline();
+void printMainMemoryMinimal();
 
 char lines[MAX_LINES][MAX_INSTRUCTION_TOKENS]; //An array to hold the text instructions after reading from file
 int lineCount = 0;
@@ -127,7 +129,7 @@ int main() {
     }
 
     printRegisters();
-
+    printMainMemoryMinimal();
 }
 
 void runPipeline() {
@@ -246,13 +248,11 @@ void execute() {
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 10: //LW
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
-                //Must pass through memory phase
-                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
             case 11: //SW
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
                 //Must pass through memory phase
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
             default:
                 break;
         }
@@ -460,6 +460,18 @@ void printMainMemory() {
 
 }
 
+void printMainMemoryMinimal(){
+    for (int i = 0; i < MAIN_MEMORY_SIZE; i++){
+        if (mainMemory[i] != 0){
+            if (i < DATA_OFFSET){
+                printf("Index: %d, Value: 0x%08X\n",i, mainMemory[i]);
+            } else {
+                printf("Index: %d, Value: %d\n",i, mainMemory[i]);
+            }
+        }
+    }
+}
+
 void printRegisters() {
 
     printf("Registers:\n");
@@ -475,7 +487,7 @@ void printRegistersMinimal() {
 
     printf("\n");
     for (int i =0; i < 8; i++) {
-        printf("R%d: %d: ", i, registers[i]);
+        printf("R%d: %d ", i, registers[i]);
         printf(" ");
     }
     printf("\n");
