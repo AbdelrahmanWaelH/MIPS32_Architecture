@@ -37,6 +37,12 @@ uint32_t memory[2048];  // 2048 words (32 bits each)
 uint32_t registers[32]; // 31 GPRs + 1 Zero register
 uint32_t PC;            // Program Counter
 
+// Tracking arrays for reporting updates
+uint32_t previous_registers[32]; // Previous values of registers for change reporting
+uint32_t previous_memory[2048];  // Previous values of memory for change reporting
+bool register_updated[32];       // Flags to indicate which registers were updated
+bool memory_updated[2048];       // Flags to indicate which memory locations were updated
+
 // Pipeline registers
 typedef struct {
   int active;           // Is this pipeline stage active?
@@ -144,7 +150,6 @@ int main() {
 
   // Run the simulation
   while (check_running(total_instructions)) {
-    printf("Cycle %d:\n", cycle);
 
     // Detect and resolve hazards first
     detect_hazards();
@@ -175,10 +180,29 @@ int main() {
   }
 
   printf("\nSimulation completed in %d cycles.\n", cycle - 1);
-  printf("Final register values:\n");
+  
+  // Display all register contents after last cycle
+  printf("Final register values (all registers):\n");
   for (int i = 0; i < 32; i++) {
-    if (registers[i] != 0) {
-      printf("R%d = %d (0x%08X)\n", i, registers[i], registers[i]);
+    printf("R%d = %d (0x%08X)\n", i, registers[i], registers[i]);
+  }
+  
+  // Display full memory contents after last cycle
+  printf("\nFinal memory contents:\n");
+  
+  // Instruction memory (first 1024 words)
+  printf("Instruction Memory:\n");
+  for (int i = 0; i < 1024; i++) {
+    if (memory[i] != 0) {
+      printf("Memory[%d] = 0x%08X\n", i, memory[i]);
+    }
+  }
+  
+  // Data memory (next 1024 words)
+  printf("\nData Memory:\n");
+  for (int i = 1024; i < 2048; i++) {
+    if (memory[i] != 0) {
+      printf("Memory[%d] = %d (0x%08X)\n", i, memory[i], memory[i]);
     }
   }
 
@@ -199,6 +223,12 @@ void initialize() {
   for (int i = 0; i < 5; i++) {
     memset(&pipeline[i], 0, sizeof(PipelineReg));
   }
+  
+  // Initialize tracking arrays
+  memset(previous_registers, 0, sizeof(previous_registers));
+  memset(previous_memory, 0, sizeof(previous_memory));
+  memset(register_updated, 0, sizeof(register_updated));
+  memset(memory_updated, 0, sizeof(memory_updated));
 }
 
 void fetch_instruction() {
@@ -270,9 +300,12 @@ void decode_instruction() {
           pipeline[ID_STAGE].mem_read = 1;
           pipeline[ID_STAGE].reg_write = 1;
         } else if (pipeline[ID_STAGE].opcode == SW) {
+          // SW format: SW Rs Rd imm => MEM[Rd + imm] = Rs
+          // In our encoding: opcode(4) | rs(5) | rd(5) | immediate(18)
+          // where rs is the source register (whose value is stored)
+          // and rd is the base address register
           pipeline[ID_STAGE].mem_write = 1;
-          pipeline[ID_STAGE].rs2 =
-              pipeline[ID_STAGE].rd; // For SW, "rd" is actually rs2
+          pipeline[ID_STAGE].rs2 = pipeline[ID_STAGE].rd; // rs is in rd field
           pipeline[ID_STAGE].rd = 0; // SW doesn't write to a register
         } else if (pipeline[ID_STAGE].opcode == BNE) {
           pipeline[ID_STAGE].rs2 =
@@ -380,9 +413,13 @@ void execute_instruction() {
         break;
 
       case LW:
-      case SW:
         pipeline[EX_STAGE].mem_address =
-            pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
+            pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate + 1024;
+        break;
+      case SW:
+        // SW: MEM[rs1 + imm] = rs2_value
+        pipeline[EX_STAGE].mem_address =
+            pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate + 1024;
         break;
       }
     }
@@ -425,7 +462,12 @@ void memory_access() {
       // Store word
       if (pipeline[MEM_STAGE].mem_address >= 0 &&
           pipeline[MEM_STAGE].mem_address < 2048) {
-        memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs1_value;
+        // Save the previous value for reporting
+        previous_memory[pipeline[MEM_STAGE].mem_address] = memory[pipeline[MEM_STAGE].mem_address];
+        // Mark this memory location as updated
+        memory_updated[pipeline[MEM_STAGE].mem_address] = true;
+        // Update the memory - for SW instruction, rs2_value contains the value to store
+        memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs2_value;
           } else {
             printf("Memory access error: address %d is out of bounds\n",
                    pipeline[MEM_STAGE].mem_address);
@@ -446,6 +488,11 @@ void write_back() {
   // Write back to register file
   if (pipeline[WB_STAGE].active && pipeline[WB_STAGE].reg_write &&
       pipeline[WB_STAGE].rd > 0) {
+    // Save the previous value for reporting
+    previous_registers[pipeline[WB_STAGE].rd] = registers[pipeline[WB_STAGE].rd];
+    // Mark this register as updated
+    register_updated[pipeline[WB_STAGE].rd] = true;
+    // Update the register
     registers[pipeline[WB_STAGE].rd] = pipeline[WB_STAGE].result;
   }
 }
@@ -490,16 +537,33 @@ void detect_hazards() {
   }
 }
 
+// Arrays to track register and memory updates for reporting
+uint32_t previous_registers[32];
+uint32_t previous_memory[2048];
+bool register_updated[32];
+bool memory_updated[2048];
+
 void display_processor_state(int cycle) {
+  // First print the clock cycle number
+  printf("======= Clock Cycle %d =======\n", cycle);
   printf("  PC: %d\n", PC);
 
-  printf("  Pipeline:\n");
+  // Reset update trackers for this cycle
+  memset(register_updated, 0, sizeof(register_updated));
+  memset(memory_updated, 0, sizeof(memory_updated));
+
+  printf("  Pipeline Stages:\n");
+  
+  // IF Stage
   if (pipeline[IF_STAGE].active) {
-    printf("    IF: Instruction %d\n", pipeline[IF_STAGE].PC + 1);
+    printf("    IF: Instruction at address %d (PC=%d)\n", 
+           pipeline[IF_STAGE].PC, pipeline[IF_STAGE].PC);
+    printf("        Input Parameters: PC=%d\n", pipeline[IF_STAGE].PC);
   } else {
     printf("    IF: Idle\n");
   }
 
+  // ID Stage
   if (pipeline[ID_STAGE].active) {
     printf("    ID: ");
     print_instruction(pipeline[ID_STAGE].opcode, pipeline[ID_STAGE].rd,
@@ -511,10 +575,34 @@ void display_processor_state(int cycle) {
       printf(" (stalled)");
     }
     printf("\n");
+    printf("        Input Parameters: Instruction=0x%08X, PC=%d\n", 
+           pipeline[ID_STAGE].instruction, pipeline[ID_STAGE].PC);
+    if (pipeline[ID_STAGE].cycles_in_stage == 2) {
+      if (pipeline[ID_STAGE].rs1 > 0) {
+        printf("        RS1(R%d)=%d, ", pipeline[ID_STAGE].rs1, pipeline[ID_STAGE].rs1_value);
+      }
+      if (pipeline[ID_STAGE].rs2 > 0 && (pipeline[ID_STAGE].instr_type == R_TYPE || 
+          pipeline[ID_STAGE].opcode == BNE || pipeline[ID_STAGE].opcode == SW)) {
+        printf("RS2(R%d)=%d, ", pipeline[ID_STAGE].rs2, pipeline[ID_STAGE].rs2_value);
+      }
+      if (pipeline[ID_STAGE].instr_type == I_TYPE && pipeline[ID_STAGE].opcode != BNE && 
+          pipeline[ID_STAGE].opcode != SW) {
+        printf("IMM=%d, ", pipeline[ID_STAGE].immediate);
+      }
+      if (pipeline[ID_STAGE].instr_type == R_TYPE && 
+          (pipeline[ID_STAGE].opcode == SLL || pipeline[ID_STAGE].opcode == SRL)) {
+        printf("SHAMT=%d, ", pipeline[ID_STAGE].shamt);
+      }
+      if (pipeline[ID_STAGE].instr_type == J_TYPE) {
+        printf("ADDR=%d, ", pipeline[ID_STAGE].address);
+      }
+      printf("\n");
+    }
   } else {
     printf("    ID: Idle\n");
   }
 
+  // EX Stage
   if (pipeline[EX_STAGE].active) {
     printf("    EX: ");
     print_instruction(pipeline[EX_STAGE].opcode, pipeline[EX_STAGE].rd,
@@ -523,10 +611,34 @@ void display_processor_state(int cycle) {
                       pipeline[EX_STAGE].address);
     printf(" (cycle %d of 2)", pipeline[EX_STAGE].cycles_in_stage);
     printf("\n");
+    printf("        Input Parameters: ");
+    if (pipeline[EX_STAGE].rs1 > 0) {
+      printf("RS1(R%d)=%d, ", pipeline[EX_STAGE].rs1, pipeline[EX_STAGE].rs1_value);
+    }
+    if (pipeline[EX_STAGE].rs2 > 0 && (pipeline[EX_STAGE].instr_type == R_TYPE || 
+        pipeline[EX_STAGE].opcode == BNE || pipeline[EX_STAGE].opcode == SW)) {
+      printf("RS2(R%d)=%d, ", pipeline[EX_STAGE].rs2, pipeline[EX_STAGE].rs2_value);
+    }
+    if (pipeline[EX_STAGE].instr_type == I_TYPE && pipeline[EX_STAGE].opcode != BNE && 
+        pipeline[EX_STAGE].opcode != SW) {
+      printf("IMM=%d, ", pipeline[EX_STAGE].immediate);
+    }
+    if (pipeline[EX_STAGE].instr_type == R_TYPE && 
+        (pipeline[EX_STAGE].opcode == SLL || pipeline[EX_STAGE].opcode == SRL)) {
+      printf("SHAMT=%d, ", pipeline[EX_STAGE].shamt);
+    }
+    if (pipeline[EX_STAGE].cycles_in_stage == 2) {
+      printf("\n        Result=%d", pipeline[EX_STAGE].result);
+      if (pipeline[EX_STAGE].branch_taken) {
+        printf(", Branch Taken (new PC=%d)", pipeline[EX_STAGE].PC + 1 + pipeline[EX_STAGE].immediate);
+      }
+    }
+    printf("\n");
   } else {
     printf("    EX: Idle\n");
   }
 
+  // MEM Stage
   if (cycle % 2 == 0) { // Even cycles have MEM stage
     if (pipeline[MEM_STAGE].active) {
       printf("    MEM: ");
@@ -535,6 +647,21 @@ void display_processor_state(int cycle) {
                         pipeline[MEM_STAGE].immediate,
                         pipeline[MEM_STAGE].shamt, pipeline[MEM_STAGE].address);
       printf("\n");
+      printf("        Input Parameters: ");
+      if (pipeline[MEM_STAGE].mem_read || pipeline[MEM_STAGE].mem_write) {
+        printf("Memory Address=%d, ", pipeline[MEM_STAGE].mem_address);
+      }
+      
+      if (pipeline[MEM_STAGE].mem_write) {
+        // For SW instruction, rs2_value contains the value to store
+        printf("Value to Store=%d", pipeline[MEM_STAGE].rs2_value);
+        // Track memory update
+        memory_updated[pipeline[MEM_STAGE].mem_address] = true;
+        previous_memory[pipeline[MEM_STAGE].mem_address] = memory[pipeline[MEM_STAGE].mem_address];
+      } else if (pipeline[MEM_STAGE].mem_read) {
+        printf("Loaded Value=%d", pipeline[MEM_STAGE].result);
+      }
+      printf("\n");
     } else {
       printf("    MEM: Idle\n");
     }
@@ -542,19 +669,50 @@ void display_processor_state(int cycle) {
     printf("    MEM: Disabled in odd cycles\n");
   }
 
+  // WB Stage
   if (pipeline[WB_STAGE].active) {
     printf("    WB: ");
     print_instruction(pipeline[WB_STAGE].opcode, pipeline[WB_STAGE].rd,
                       pipeline[WB_STAGE].rs1, pipeline[WB_STAGE].rs2,
                       pipeline[WB_STAGE].immediate, pipeline[WB_STAGE].shamt,
                       pipeline[WB_STAGE].address);
+    printf("\n");
+    printf("        Input Parameters: ");
     if (pipeline[WB_STAGE].reg_write && pipeline[WB_STAGE].rd > 0) {
-      printf(" (R%d = %d)", pipeline[WB_STAGE].rd, pipeline[WB_STAGE].result);
+      printf("Result=%d to write to R%d", pipeline[WB_STAGE].result, pipeline[WB_STAGE].rd);
+      // Track register update
+      register_updated[pipeline[WB_STAGE].rd] = true;
+      previous_registers[pipeline[WB_STAGE].rd] = registers[pipeline[WB_STAGE].rd];
     }
     printf("\n");
   } else {
     printf("    WB: Idle\n");
   }
+  
+  // Display register updates
+  bool any_reg_updated = false;
+  for (int i = 0; i < 32; i++) {
+    if (register_updated[i]) {
+      if (!any_reg_updated) {
+        printf("  Register Updates:\n");
+        any_reg_updated = true;
+      }
+      printf("    R%d: %d → %d\n", i, previous_registers[i], registers[i]);
+    }
+  }
+  
+  // Display memory updates
+  bool any_mem_updated = false;
+  for (int i = 0; i < 2048; i++) {
+    if (memory_updated[i]) {
+      if (!any_mem_updated) {
+        printf("  Memory Updates:\n");
+        any_mem_updated = true;
+      }
+      printf("    Memory[%d]: %d → %d\n", i, previous_memory[i], memory[i]);
+    }
+  }
+  
   printf("\n");
 }
 
@@ -595,7 +753,7 @@ void print_instruction(int opcode, int rd, int rs1, int rs2, int imm, int shamt,
     printf("LW R%d R%d %d", rd, rs1, imm);
     break;
   case SW:
-    printf("SW R%d R%d %d", rs2, rs1, imm);
+    printf("SW R%d R%d %d", rs2, rs1, imm);  // SW rs rd imm = MEM[rd + imm] = rs
     break;
   default:
     printf("Unknown instruction");
