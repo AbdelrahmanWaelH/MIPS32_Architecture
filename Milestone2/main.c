@@ -1,822 +1,703 @@
-#include "FileReader.h"
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <ctype.h>
+#include "FileReader.h"
 
-#define MAIN_MEMORY_SIZE 2048
-#define WORD_SIZE 32
-#define REGISTER_COUNT 32
-#define MAX_LINES 64
-#define MAX_INSTRUCTION_TOKENS 256
+// Define opcodes
+#define ADD  0
+#define SUB  1
+#define MULI 2
+#define ADDI 3
+#define BNE  4
+#define ANDI 5
+#define ORI  6
+#define J    7
+#define SLL  8
+#define SRL  9
+#define LW   10
+#define SW   11
 
-// Modify function declarations to use pointers
-void parseTextInstruction(); // Parses the text instructions into their binary representation.
-void readFileToMemory(char* filepath);
-void initRegisters();
-void initMemory();
-void initPipeline();
-void runPipeline();
+// Define instruction types
+#define R_TYPE 0
+#define I_TYPE 1
+#define J_TYPE 2
 
-char* filepath = "test_combined_hazards.txt";
-int fetchReady = 1; //0 for fetch ready, 1 for fetch not ready
-int cycle = 0;
+// Define pipeline stages
+#define IF_STAGE  0
+#define ID_STAGE  1
+#define EX_STAGE  2
+#define MEM_STAGE 3
+#define WB_STAGE  4
 
-enum InstructionFormat {
-    R_FORMAT,
-    I_FORMAT,
-    J_FORMAT,
-    INVALID_FORMAT
-};
+// Processor components
+uint32_t memory[2048];        // 2048 words (32 bits each)
+uint32_t registers[32];       // 31 GPRs + 1 Zero register
+uint32_t PC;                  // Program Counter
 
-struct Word {
-    int word; //32 bits to store full word
-    enum InstructionFormat format;
-};
+// Pipeline registers
+typedef struct {
+    int active;               // Is this pipeline stage active?
+    uint32_t instruction;     // The instruction being processed
+    uint32_t PC;              // PC value for this instruction
+    int opcode;               // Instruction opcode
+    int rs1;                  // Source register 1
+    int rs2;                  // Source register 2
+    int rd;                   // Destination register
+    int immediate;            // Immediate value
+    int shamt;                // Shift amount
+    int address;              // Jump address
+    uint32_t rs1_value;       // Value of source register 1
+    uint32_t rs2_value;       // Value of source register 2
+    uint32_t result;          // Result of operation
+    int instr_type;           // Instruction type (R, I, J)
+    int mem_read;             // Does this instruction read memory?
+    int mem_write;            // Does this instruction write memory?
+    int reg_write;            // Does this instruction write to a register?
+    int branch_taken;         // Was a branch taken?
+    int mem_address;          // Memory address to access
+    int stall_cycles;         // Number of cycles to stall
+} PipelineReg;
 
-struct InstructionParts {
-    int opcode, r1, r2, r3, imm, shamt, address;
-    struct Word r1val, r2val, r3val;
-    enum InstructionFormat format;
-    int writeBackRegister1;
-    struct Word writeBackValue1;
-    int writeBackRegister2;
-    struct Word writeBackValue2;
-};
+PipelineReg pipeline[5];      // One for each stage
 
-struct Pipeline {
-    struct Word fetchPhaseInst;
-    struct Word decodePhaseInst;
-    struct Word executePhaseInst;
-    struct Word memoryPhaseInst;
-    struct Word writebackPhaseInst;
-    struct InstructionParts decodedParts;
-};
+// Forward declarations
+void initialize();
+void fetch_instruction();
+void decode_instruction();
+void execute_instruction();
+void memory_access();
+void write_back();
+void detect_hazards();
+void display_processor_state(int cycle);
+void print_instruction(int opcode, int rd, int rs1, int rs2, int imm, int shamt, int addr);
+int load_program_from_file(const char* filename);
 
-char lines[MAX_LINES][MAX_INSTRUCTION_TOKENS]; //An array to hold the text instructions after reading from file
-int lineCount = 0;
+// Helper function to get opcode from mnemonic
+int get_opcode(const char* mnemonic) {
+    if (strcmp(mnemonic, "ADD") == 0) return ADD;
+    if (strcmp(mnemonic, "SUB") == 0) return SUB;
+    if (strcmp(mnemonic, "MULI") == 0) return MULI;
+    if (strcmp(mnemonic, "ADDI") == 0) return ADDI;
+    if (strcmp(mnemonic, "BNE") == 0) return BNE;
+    if (strcmp(mnemonic, "ANDI") == 0) return ANDI;
+    if (strcmp(mnemonic, "ORI") == 0) return ORI;
+    if (strcmp(mnemonic, "J") == 0) return J;
+    if (strcmp(mnemonic, "SLL") == 0) return SLL;
+    if (strcmp(mnemonic, "SRL") == 0) return SRL;
+    if (strcmp(mnemonic, "LW") == 0) return LW;
+    if (strcmp(mnemonic, "SW") == 0) return SW;
+    return -1;  // Invalid mnemonic
+}
+const char* program_file = "test_combined_hazards.txt";
 
-struct Word mainMemory[MAIN_MEMORY_SIZE];
-struct Word registers[REGISTER_COUNT];
-struct Word programCounter;
-struct Pipeline pipeline;
-// Enhance the ForwardingUnit struct to better track data hazards
-struct ForwardingUnit {
-    int forwardA;       // 0: no forwarding, 1: from EX/MEM, 2: from MEM/WB
-    int forwardB;       // 0: no forwarding, 1: from EX/MEM, 2: from MEM/WB
-    int sourceRegA;     // Register read in decode stage (rs)
-    int sourceRegB;     // Register read in decode stage (rt)
-    struct Word forwardValueA; // Value to be forwarded for rs
-    struct Word forwardValueB; // Value to be forwarded for rt
-    int stall;          // 0: no stall, 1: stall needed
-};
-
-// Enhanced branch predictor with 2-bit saturating counter
-struct BranchPredictor {
-    int branchTaken;    // 0: not taken (prediction), 1: taken
-    int branchResolved; // 0: not resolved, 1: resolved
-    int targetAddress;  // Branch target address if taken
-    int flushPipeline;  // 0: no flush, 1: flush required
-    int predictionBits; // 2-bit saturating counter: 00-strongly not taken, 01-weakly not taken, 10-weakly taken, 11-strongly taken
-    int lastBranchResult; // Result of last branch: 0-not taken, 1-taken
-};
-
-// Add structure for structural hazard detection
-struct StructuralHazard {
-    int memoryBusy;     // 0: memory bus available, 1: memory bus busy
-    int stall;          // 0: no stall, 1: stall needed due to structural hazard
-};
-
-struct ForwardingUnit forwardingUnit;
-struct BranchPredictor branchPredictor;
-struct StructuralHazard structuralHazard;
-
-void printBinary(unsigned int num) {
-
-    for (int i = 31; i >= 0; i--) {
-        printf("%d", (num >> i) & 1);
-        if (i % 4 == 0) printf(" "); // optional spacing every 4 bits
+// Helper function to parse register number
+int parse_register(const char* reg_str) {
+    // Skip 'R' prefix
+    if (reg_str[0] == 'R' || reg_str[0] == 'r') {
+        return atoi(reg_str + 1);
     }
-    printf("\n");
+    return -1;  // Invalid register
 }
 
-void printBinaryR(unsigned int num) {
-
-    for (int i = 31; i >= 0; i--) {
-        printf("%d", (num >> i) & 1);
-        if (i == 32-4 || i == 32-9 || i == 32-14 || i == 32-19) printf(" "); // optional spacing every 4 bits
+int main() {
+    initialize();
+    int total_instructions = load_program_from_file(program_file);
+    
+    if (total_instructions <= 0) {
+        printf("Error loading program or no instructions found.\n");
+        return 1;
     }
-    printf("\n");
-}
-
-void printBinaryI(unsigned int num) {
-
-    for (int i = 31; i >= 0; i--) {
-        printf("%d", (num >> i) & 1);
-        if (i == 32-4 || i == 32-9 || i == 32-14) printf(" "); // optional spacing every 4 bits
-    }
-    printf("\n");
-}
-
-void printBinaryJ(unsigned int num) {
-
-    for (int i = 31; i >= 0; i--) {
-        printf("%d", (num >> i) & 1);
-        if (i == 32-4) printf(" "); // optional spacing every 4 bits
-    }
-    printf("\n");
-}
-
-void printMainMemory(){
-    for(int i = 0; i < lineCount; i++){
-        switch (mainMemory[i].format)
-        {
-            case R_FORMAT:
-            printBinaryR(mainMemory[i].word);
-            break;
-            case I_FORMAT:
-            printBinaryI(mainMemory[i].word);
-            break;
-            case J_FORMAT:
-            printBinaryJ(mainMemory[i].word);
-            break;
+    
+    int cycle = 1;
+    int instructions_executed = 0;
+    
+    printf("Program loaded with %d instructions\n", total_instructions);
+    
+    // Calculate total cycles: 7 + ((n - 1) * 2)
+    int total_cycles = 7 + ((total_instructions - 1) * 2);
+    printf("Estimated total cycles: %d\n\n", total_cycles);
+    
+    // Run the simulation
+    while (cycle <= total_cycles || instructions_executed < total_instructions) {
+        printf("Cycle %d:\n", cycle);
         
-        default:
-            break;
-        }
-    }
-}
-
-// Update function implementations to use pointers
-void fetch(){
-    if (fetchReady && programCounter.word < MAIN_MEMORY_SIZE) {
-        pipeline.fetchPhaseInst = mainMemory[programCounter.word];
-    } else {
-        pipeline.fetchPhaseInst = (struct Word) { .word=0, .format = INVALID_FORMAT};
-    }
-    //the logic here is that it either hands off the right data when it's time, or nothing at all when we're in an _odd_ stage
-}
-
-void decode(){
-    struct Word instruction = pipeline.fetchPhaseInst;
-    struct InstructionParts *parts = &pipeline.decodedParts;
-    parts->opcode = (instruction.word & 0xF0000000) >> 28;
-    parts->r1 = (instruction.word & 0x0F800000) >> 23;
-    parts->r2 = (instruction.word & 0x007C0000) >> 18;
-    parts->r3 = (instruction.word & 0x0003E000) >> 13;
-    parts->shamt = (instruction.word & 0x00001FFF);
-    parts->imm = (instruction.word & 0x0003FFFF);
-    parts->address = (instruction.word & 0x000007FF);
-    parts->r1val = registers[parts->r1];
-    parts->r2val = registers[parts->r2];
-    parts->r3val = registers[parts->r3];
-    //hand off data to the next stage
-    pipeline.decodePhaseInst = instruction;
-}
-
-void execute(){
-    struct InstructionParts *parts = &pipeline.decodedParts;
-    switch(parts->opcode){
-        case 0:  parts->r1val.word = parts->r2val.word + parts->r3val.word; break; //ADD R1 R2 R3 should use WB
-        case 1:  parts->r1val.word = parts->r2val.word - parts->r3val.word; break; //SUB R1 R2 R3 should use WB
-        case 2:  parts->r1val.word = parts->r2val.word * parts->imm; break; //MULI should use WB
-        case 3:  parts->r1val.word = parts->r2val.word + parts->imm; break; //ADDI should use WB
-        case 4:  if (parts->r1val.word != parts->r2val.word){ parts->address = programCounter.word + 1 + parts->imm;} break; //BNE
-        case 5:  parts->r1val.word = parts->r2val.word & parts->imm; break; //ANDI should use WB
-        case 6:  parts->r1val.word = parts->r2val.word | parts->imm; break; //ORI should use WB
-        case 7:  programCounter.word = (programCounter.word & 0xF0000000) | (parts->address & 0x0FFFFFFF); //PC = PC[31:28] + ADDRESS (28b)
-        case 8:  parts->r1val.word = parts->r2val.word << parts->shamt; break; //SLL should use WB
-        case 9:  parts->r1val.word = parts->r2val.word >> parts->shamt; break; //SRL should use WB
-        case 10:  //LW should use the MEM phase
-        case 11: parts->address = parts->r1val.word + parts->imm; break; //SW should use the MEM phase, only address is being computed here
-        default: break;
-    }
-    parts->writeBackRegister2 = parts->writeBackRegister1;
-    parts->writeBackValue2 = parts->writeBackValue1;
-    int opcode = parts->opcode;
-    if (opcode!=4 && opcode!=7 && opcode!=11) {
-        parts->writeBackRegister1 = parts->r1;
-        parts->writeBackValue1 = parts->r1val;
-    }
-    pipeline.executePhaseInst = pipeline.decodePhaseInst;
-}
-
-void memory(){
-    struct InstructionParts *parts = &pipeline.decodedParts;
-    switch(parts->opcode){
-        case 10: parts->r1val = mainMemory[parts->address]; break; //LW
-        case 11: mainMemory[parts->address] = parts->r1val; break; //SW
-        default: break;
-    } //performs the actual data transfer to memory
-    pipeline.memoryPhaseInst = pipeline.executePhaseInst;
-}
-
-void writeBack(){
-    struct InstructionParts *parts = &pipeline.decodedParts;
-    switch(parts->opcode){
-        case 0: case 1: case 2: case 3: case 5: case 6: case 8: case 9: case 10: 
-            if (parts->writeBackRegister2 != 0) {registers[parts->writeBackRegister2] = parts->writeBackValue2;} break; //all instructions with opcode 0-10 will use the WB stage
-        //prevents writing of the zero register
-        case 4: programCounter.word = parts->address;//BNE, TODO store ADDRESS in programCounter
-        case 7: //JMP
-        case 11: break; //11 doesn't really use this stage but we will keep it for lolz 
-        default: break;
-    }
-    if (cycle%2 == 0){
-        pipeline.writebackPhaseInst = pipeline.executePhaseInst;
-    } else {
-        pipeline.writebackPhaseInst = pipeline.memoryPhaseInst;
-    }
-}
-
-void handleHazards();
-
-
-
-int main(){
-    runPipeline();
-}
-
-// ... existing code ...
-
-
-void initRegisters(){
-    for(int i = 0; i < REGISTER_COUNT; i++){
-        struct Word word;
-        word.word = 0;
-        word.format = R_FORMAT;
-        registers[i] = word;
-    }
-}
-
-
-void initMemory(){
-    for(int i = 0; i < MAIN_MEMORY_SIZE; i++){
-        struct Word word;
-        word.word = 0;
-        word.format = R_FORMAT;
-        mainMemory[i] = word;
-    }
-}
-
-
-void initPipeline(){
-    pipeline.fetchPhaseInst = (struct Word) {0};
-    pipeline.decodePhaseInst = (struct Word) {0};
-    pipeline.executePhaseInst= (struct Word) {0};
-    pipeline.memoryPhaseInst = (struct Word) {0};
-    pipeline.writebackPhaseInst = (struct Word) {0};
-    pipeline.decodedParts = (struct InstructionParts) {0};
-    
-    // Initialize hazard handling units with enhanced fields
-    forwardingUnit.forwardA = 0;
-    forwardingUnit.forwardB = 0;
-    forwardingUnit.sourceRegA = 0;
-    forwardingUnit.sourceRegB = 0;
-    forwardingUnit.forwardValueA.word = 0;
-    forwardingUnit.forwardValueB.word = 0;
-    forwardingUnit.stall = 0;
-    
-    branchPredictor.branchTaken = 0;
-    branchPredictor.branchResolved = 0;
-    branchPredictor.targetAddress = 0;
-    branchPredictor.flushPipeline = 0;
-    branchPredictor.predictionBits = 0; // Start with strongly not taken
-    branchPredictor.lastBranchResult = 0;
-    
-    structuralHazard.memoryBusy = 0;
-    structuralHazard.stall = 0;
-    
-    programCounter.word = 0; // Initialize PC
-}
-
-
-
-void parseTextInstruction(){
-
-    char tokens[4][10];
-
-    for(int i = 0; i < lineCount; i++){
-
-        //Get Tokens Here
-
-        int tokenIndex = 0;
-        char* token = strtok(lines[i], " ");
-        while(token != NULL){
-            
-            strncpy(tokens[tokenIndex], token, 10);
-            tokenIndex++;
-            token = strtok(NULL, " ");
-        }
-
-        //Convert To Binary Format Here
-
-        char* opcode = tokens[0];
-        struct Word binaryInstruction;
-        binaryInstruction.word = 0;
-        int opcodeBin = 0;
-        enum InstructionFormat format;
+        // Detect and resolve hazards first
+        detect_hazards();
         
-        if (strcmp(opcode, "ADD") == 0) {
-            opcodeBin = 0; 
-            format = R_FORMAT;
-        } else if (strcmp(opcode, "SUB") == 0) {
-            opcodeBin = 1;
-            format = R_FORMAT;
-        } else if (strcmp(opcode, "MULI") == 0) {
-            opcodeBin = 2;
-            format = I_FORMAT;
-        } else if (strcmp(opcode, "ADDI") == 0) {
-            opcodeBin = 3;
-            format = I_FORMAT;
-        } else if (strcmp(opcode, "BNE") == 0) {
-            opcodeBin = 4;
-            format = I_FORMAT;
-        } else if (strcmp(opcode, "ANDI") == 0) {
-            opcodeBin = 5;
-            format = I_FORMAT;
-        } else if (strcmp(opcode, "ORI") == 0) {
-            opcodeBin = 6;
-            format = I_FORMAT;
-        } else if (strcmp(opcode, "J") == 0) {
-            opcodeBin = 7;
-            format = J_FORMAT;
-        } else if (strcmp(opcode, "SLL") == 0) {
-            opcodeBin = 8;
-            format = R_FORMAT;
-            //TODO: Handle SHAMT
-
-            int shamt = atoi(tokens[3]);
-            binaryInstruction.word |= shamt;
-            
-        } else if (strcmp(opcode, "SRL") == 0) {
-            opcodeBin = 9;
-            format = R_FORMAT;
-            //TODO: Handle SHAMT
-            int shamt = atoi(tokens[3]);
-            binaryInstruction.word |= shamt;
-            
-            
-        } else if (strcmp(opcode, "LW") == 0) {
-            opcodeBin = 10;
-            format = I_FORMAT;
-        } else if (strcmp(opcode, "SW") == 0) {
-            opcodeBin = 11;
-            format = I_FORMAT;
-        } else {
-            opcodeBin = -1;
-            format = INVALID_FORMAT;
+        // Execute pipeline stages (in reverse to prevent overwriting)
+        if (cycle % 2 == 1) {  // Odd cycles: IF, ID, EX, WB
+            write_back();
+            execute_instruction();
+            decode_instruction();
+            fetch_instruction();
+        } else {               // Even cycles: ID, EX, MEM, WB
+            write_back();
+            memory_access();
+            execute_instruction();
+            decode_instruction();
         }
         
-        binaryInstruction.word |= opcodeBin  << 28;
-        binaryInstruction.format = format;
-
-        int reg1;
-        int reg2;
-        int reg3;
-        int immediateValue;
-        switch (format)
-        {
-            case R_FORMAT:
-                reg1 = atoi(tokens[1] + 1);
-                reg2 = atoi(tokens[2] + 1);
-
-                reg3 = atoi(tokens[3] + 1);
-                if(opcodeBin == 8 || opcodeBin == 9) reg3 = 0;
-
-                //printBinary(binaryInstruction.word);
-                binaryInstruction.word |= reg1 << 23;
-                //printBinary(binaryInstruction.word);
-                binaryInstruction.word |= reg2 << 18;
-                //printBinary(binaryInstruction.word);
-                binaryInstruction.word |= reg3 << 13;
-                
-                // printf("Binary Instruction: %d\n", binaryInstruction.word);
-                printBinaryR(binaryInstruction.word);
-                
-            break;
-            
-            
-            case I_FORMAT:
-
-                reg1 = atoi(tokens[1] + 1);
-                reg2 = atoi(tokens[2] + 1);
-
-                immediateValue = atoi(tokens[3]);
-
-                //printBinary(binaryInstruction.word);
-                binaryInstruction.word |= reg1 << 23;
-                //printBinary(binaryInstruction.word);
-                binaryInstruction.word |= reg2 << 18;
-                //printBinary(binaryInstruction.word);
-                binaryInstruction.word |= immediateValue;
-                
-                // printf("Binary Instruction: %d\n", binaryInstruction.word);
-                printBinaryI(binaryInstruction.word);
-
-            break;
-
-            case J_FORMAT:
-
-                binaryInstruction.word |= atoi(tokens[1]);
-                printBinaryJ(binaryInstruction.word);
-
-            break;
-            
-            default:
-            break;
-        }
-        mainMemory[i] = binaryInstruction;
-    
-}
-    
-    // printf("Token 1: %s\n", tokens[0]);
-    // printf("Token 2: %s\n", tokens[1]);
-    // printf("Token 3: %s\n", tokens[2]);
-    // printf("Token 4: %s\n", tokens[3]); 
-
-}
-
-/* Reads text file and writes lines to array of strings*/
-void readFileToMemory(char* filepath){
-
-    char* textInstructions = readFile(filepath);
-    // printf("%s\n", textInstructions);
-    lineCount = 0;
-
-
-    char* token = strtok(textInstructions, "\n");
-    while(token != NULL && lineCount < MAX_LINES){
-        strncpy(lines[lineCount], token, MAX_INSTRUCTION_TOKENS - 1);
-        lines[lineCount][MAX_INSTRUCTION_TOKENS - 1] = '\0';  // Null-terminate to be safe
-
-        // Remove trailing \r if it exists
-        size_t len = strlen(lines[lineCount]);
-        if (len > 0 && lines[lineCount][len - 1] == '\r') {
-            lines[lineCount][len - 1] = '\0';
-        }
-
-        lines[lineCount][MAX_INSTRUCTION_TOKENS - 1] = '\0';
-        lineCount++;
-        token = strtok(NULL, "\n");
-    }
-
-    strncpy(lines[lineCount], "[END]", MAX_INSTRUCTION_TOKENS - 1);
-
-    //parseTextInstruction();
-
-}
-
-// Enhanced data hazard detection with load-use stall detection
-void detectDataHazards() {
-    // Reset forwarding flags and stall
-    forwardingUnit.forwardA = 0;
-    forwardingUnit.forwardB = 0;
-    forwardingUnit.stall = 0;
-    
-    // Get source registers from decode stage
-    forwardingUnit.sourceRegA = pipeline.decodedParts.r2; // rs
-    forwardingUnit.sourceRegB = pipeline.decodedParts.r3; // rt
-    
-    // Only check if we have a valid instruction in decode
-    if (pipeline.decodePhaseInst.format != INVALID_FORMAT) {
-        int decodeOpcode = (pipeline.decodePhaseInst.word & 0xF0000000) >> 28;
+        // Display state after this cycle
+        display_processor_state(cycle);
         
-        // Check for load-use data hazard (LW in EX followed by instruction using that data in ID)
-        if (pipeline.executePhaseInst.format != INVALID_FORMAT) {
-            int exOpcode = (pipeline.executePhaseInst.word & 0xF0000000) >> 28;
-            int exDestReg = (pipeline.executePhaseInst.word & 0x0F800000) >> 23; // r1 (destination)
-            
-            // If LW in EX and the next instruction needs that data, must stall
-            if (exOpcode == 10 && exDestReg != 0) { // LW instruction
-                if (exDestReg == forwardingUnit.sourceRegA || exDestReg == forwardingUnit.sourceRegB) {
-                    printf("  Detected load-use hazard! Stalling...\n");
-                    forwardingUnit.stall = 1;
-                    return; // Need to stall, don't check other forwarding
-                }
-            }
-            
-            // Handle other data hazards with forwarding
-            if (exDestReg != 0 && (exOpcode != 11 && exOpcode != 4 && exOpcode != 7)) {
-                // Regular forwarding from EX stage
-                if (exDestReg == forwardingUnit.sourceRegA) {
-                    printf("  Forwarding EX result to rs (R%d)\n", forwardingUnit.sourceRegA);
-                    forwardingUnit.forwardA = 1;
-                    forwardingUnit.forwardValueA = pipeline.decodedParts.r1val;
-                }
-                if (exDestReg == forwardingUnit.sourceRegB) {
-                    printf("  Forwarding EX result to rt (R%d)\n", forwardingUnit.sourceRegB);
-                    forwardingUnit.forwardB = 1;
-                    forwardingUnit.forwardValueB = pipeline.decodedParts.r1val;
-                }
-            }
-        }
-        
-        // Check MEM/WB stage for forwarding
-        if (pipeline.memoryPhaseInst.format != INVALID_FORMAT) {
-            int memOpcode = (pipeline.memoryPhaseInst.word & 0xF0000000) >> 28;
-            int memDestReg = (pipeline.memoryPhaseInst.word & 0x0F800000) >> 23;
-            
-            if (memDestReg != 0 && (memOpcode != 11 && memOpcode != 4 && memOpcode != 7)) {
-                // If EX/MEM isn't already forwarding, check if MEM/WB should
-                if (forwardingUnit.forwardA == 0 && memDestReg == forwardingUnit.sourceRegA) {
-                    printf("  Forwarding MEM result to rs (R%d)\n", forwardingUnit.sourceRegA);
-                    forwardingUnit.forwardA = 2;
-                    forwardingUnit.forwardValueA = pipeline.decodedParts.r1val;
-                }
-                if (forwardingUnit.forwardB == 0 && memDestReg == forwardingUnit.sourceRegB) {
-                    printf("  Forwarding MEM result to rt (R%d)\n", forwardingUnit.sourceRegB);
-                    forwardingUnit.forwardB = 2;
-                    forwardingUnit.forwardValueB = pipeline.decodedParts.r1val;
-                }
-            }
-        }
-    }
-}
-
-// Enhanced branch prediction with 2-bit predictor
-void handleControlHazards() {
-    // Check if current instruction in execute stage is a branch
-    if (pipeline.executePhaseInst.format != INVALID_FORMAT) {
-        int opcode = (pipeline.executePhaseInst.word & 0xF0000000) >> 28;
-        
-        // Branch instruction (BNE)
-        if (opcode == 4) {
-            struct InstructionParts *parts = &pipeline.decodedParts;
-            int branchCondition = (parts->r1val.word != parts->r2val.word);
-            
-            // Compare actual branch outcome with prediction
-            if (branchCondition != branchPredictor.branchTaken) {
-                // Prediction was wrong, need to flush
-                branchPredictor.flushPipeline = 1;
-                printf("  Branch misprediction detected! Flushing pipeline...\n");
-                
-                if (branchCondition) {
-                    // Branch was taken, but we predicted not taken
-                    branchPredictor.targetAddress = programCounter.word + parts->imm;
-                } else {
-                    // Branch was not taken, but we predicted taken
-                    branchPredictor.targetAddress = programCounter.word;
-                }
-            }
-            
-            // Update 2-bit saturating counter based on actual branch outcome
-            if (branchCondition) { // Branch taken
-                if (branchPredictor.predictionBits < 3) {
-                    branchPredictor.predictionBits++;
-                }
-            } else { // Branch not taken
-                if (branchPredictor.predictionBits > 0) {
-                    branchPredictor.predictionBits--;
-                }
-            }
-            
-            // Save result for next prediction
-            branchPredictor.lastBranchResult = branchCondition;
-            branchPredictor.branchResolved = 1;
-            
-            // Make prediction for next time this branch is encountered
-            branchPredictor.branchTaken = (branchPredictor.predictionBits >= 2);
-            
-            printf("  Branch predictor updated: %s (counter=%d)\n", 
-                   branchPredictor.branchTaken ? "Predict Taken" : "Predict Not Taken",
-                   branchPredictor.predictionBits);
-        }
-        // Jump instruction
-        else if (opcode == 7) {
-            branchPredictor.branchTaken = 1;
-            branchPredictor.targetAddress = (programCounter.word & 0xF0000000) | 
-                ((pipeline.executePhaseInst.word & 0x0FFFFFFF)); // Jump target
-            branchPredictor.flushPipeline = 1; // Signal pipeline flush
-            printf("  Jump detected! Flushing pipeline...\n");
-            branchPredictor.branchResolved = 1;
-        }
-    }
-}
-
-void detectStructuralHazards() {
-    structuralHazard.stall = 0;
-    
-    // Check if fetch and memory access would conflict (simplified model)
-    if (pipeline.executePhaseInst.format != INVALID_FORMAT) {
-        int opcode = (pipeline.executePhaseInst.word & 0xF0000000) >> 28;
-        
-        // If instruction in EX is LW or SW and would use memory next cycle
-        // And fetch would also use memory next cycle
-        if ((opcode == 10 || opcode == 11) && fetchReady == 0) {
-            printf("  Structural hazard detected: memory conflict! Stalling fetch...\n");
-            structuralHazard.memoryBusy = 1;
-            structuralHazard.stall = 1;
-        } else {
-            structuralHazard.memoryBusy = 0;
-        }
-    }
-}
-
-void applyForwarding() {
-    // Apply forwarding for rs (r2)
-    if (forwardingUnit.forwardA == 1) {
-        pipeline.decodedParts.r2val = forwardingUnit.forwardValueA;
-    } else if (forwardingUnit.forwardA == 2) {
-        pipeline.decodedParts.r2val = forwardingUnit.forwardValueA;
-    }
-    
-    // Apply forwarding for rt (r3)
-    if (forwardingUnit.forwardB == 1) {
-        pipeline.decodedParts.r3val = forwardingUnit.forwardValueB;
-    } else if (forwardingUnit.forwardB == 2) {
-        pipeline.decodedParts.r3val = forwardingUnit.forwardValueB;
-    }
-}
-
-void flushPipeline() {
-    // Clear fetch and decode stages
-    pipeline.fetchPhaseInst = (struct Word) { .word=0, .format = INVALID_FORMAT };
-    pipeline.decodePhaseInst = (struct Word) { .word=0, .format = INVALID_FORMAT };
-    
-    // Update PC to branch target
-    programCounter.word = branchPredictor.targetAddress;
-    
-    // Reset branch predictor state
-    branchPredictor.flushPipeline = 0;
-}
-
-// Modified handleHazards to integrate all hazard types
-void handleHazards() {
-    // First detect structural hazards
-    detectStructuralHazards();
-    
-    // Then detect data hazards if no structural stall
-    if (!structuralHazard.stall) {
-        detectDataHazards();
-    }
-    
-    // Apply data forwarding if needed and no stall
-    if (!forwardingUnit.stall) {
-        applyForwarding();
-    }
-    
-    // Handle control hazards
-    handleControlHazards();
-    
-    // If branch taken and pipeline flush needed
-    if (branchPredictor.flushPipeline) {
-        flushPipeline();
-    }
-}
-
-char* getInstructionText(struct Word instruction) {
-    static char instructionText[50]; // Static buffer to hold the instruction text
-
-    if (instruction.format == INVALID_FORMAT || instruction.word == 0) {
-        strcpy(instructionText, "-");
-        return instructionText;
-    }
-
-    int opcode = (instruction.word & 0xF0000000) >> 28;
-    int r1 = (instruction.word & 0x0F800000) >> 23;
-    int r2 = (instruction.word & 0x007C0000) >> 18;
-    int r3 = (instruction.word & 0x0003E000) >> 13;
-    int shamt = (instruction.word & 0x00001FFF);
-    int imm = (instruction.word & 0x0003FFFF);
-    int address = (instruction.word & 0x0FFFFFFF);
-
-    switch(opcode) {
-        case 0:  // ADD
-            sprintf(instructionText, "ADD R%d R%d R%d", r1, r2, r3);
-            break;
-        case 1:  // SUB
-            sprintf(instructionText, "SUB R%d R%d R%d", r1, r2, r3);
-            break;
-        case 2:  // MULI
-            sprintf(instructionText, "MULI R%d R%d %d", r1, r2, imm);
-            break;
-        case 3:  // ADDI
-            sprintf(instructionText, "ADDI R%d R%d %d", r1, r2, imm);
-            break;
-        case 4:  // BNE
-            sprintf(instructionText, "BNE R%d R%d %d", r1, r2, imm);
-            break;
-        case 5:  // ANDI
-            sprintf(instructionText, "ANDI R%d R%d %d", r1, r2, imm);
-            break;
-        case 6:  // ORI
-            sprintf(instructionText, "ORI R%d R%d %d", r1, r2, imm);
-            break;
-        case 7:  // J
-            sprintf(instructionText, "J %d", address);
-            break;
-        case 8:  // SLL
-            sprintf(instructionText, "SLL R%d R%d %d", r1, r2, shamt);
-            break;
-        case 9:  // SRL
-            sprintf(instructionText, "SRL R%d R%d %d", r1, r2, shamt);
-            break;
-        case 10: // LW
-            sprintf(instructionText, "LW R%d R%d %d", r1, r2, imm);
-            break;
-        case 11: // SW
-            sprintf(instructionText, "SW R%d R%d %d", r1, r2, imm);
-            break;
-        default:
-            sprintf(instructionText, "UNKNOWN");
-            break;
-    }
-
-    return instructionText;
-}
-
-// Enhanced runPipeline function with hazard handling
-void runPipeline() {
-    initRegisters();
-    initPipeline();
-    initMemory();
-    readFileToMemory(filepath);
-    parseTextInstruction();
-    
-    int done = 0;
-    int fetchWait = 0; //0 for ready, 1 waiting for memory
-
-    printf("\nStarting pipeline execution for %s...\n", filepath);
-
-    while (!done) {
-        printf("\n--- Cycle %d ---\n", cycle);
-        
-        // Process pipeline stages in reverse order to prevent overwriting
-        writeBack();
-        
-        if (!structuralHazard.stall) {
-            memory();
-        }
-        
-        execute();
-        
-        // Handle all types of hazards
-        handleHazards();
-        
-        // Only proceed with decode if no data hazard stall
-        if (!forwardingUnit.stall) {
-            decode();
-            
-            // Only fetch if no structural hazard and it's fetch's turn
-            if (!structuralHazard.stall && fetchWait == 0) {
-                fetch();
-                if (pipeline.fetchPhaseInst.format != INVALID_FORMAT) {
-                    // Only increment PC if we're not flushing the pipeline
-                    if (!branchPredictor.flushPipeline) {
-                        programCounter.word++;
-                    }
-                } else {
-                    // No more instructions to fetch, we might be done
-                    if (pipeline.decodePhaseInst.format == INVALID_FORMAT &&
-                        pipeline.executePhaseInst.format == INVALID_FORMAT &&
-                        pipeline.memoryPhaseInst.format == INVALID_FORMAT) {
-                        done = 1; // Pipeline is empty, we're done
-                    }
-                }
-                fetchWait = 1; //next cycle will use MEM phase not IF
-            } else {
-                fetchWait = 0; //MEM was used this cycle, so next cycle uses IF
-            }
-        } else {
-            printf("  Stalling pipeline due to data hazard...\n");
-            // When stalling, we don't advance the pipeline stages before EX
-        }
-        
-        // Print pipeline state for debugging
-        printf("  PC: %d\n", programCounter.word);
-        printf("  IF:  %s\n", getInstructionText(pipeline.fetchPhaseInst));
-        printf("  ID:  %s\n", getInstructionText(pipeline.decodePhaseInst));
-        printf("  EX:  %s\n", getInstructionText(pipeline.executePhaseInst));
-        printf("  MEM: %s\n", getInstructionText(pipeline.memoryPhaseInst));
-        printf("  WB:  %s\n", getInstructionText(pipeline.writebackPhaseInst));
-        
-        // Print hazard status
-        if (forwardingUnit.stall || structuralHazard.stall || branchPredictor.flushPipeline) {
-            printf("  Hazard Status: ");
-            if (forwardingUnit.stall) printf("Data Hazard ");
-            if (structuralHazard.stall) printf("Structural Hazard ");
-            if (branchPredictor.flushPipeline) printf("Control Hazard");
-            printf("\n");
-        }
-        
-        // Print register states
-        printf("\nRegister State:\n");
-        for (int i = 0; i < 8; i++) {
-            printf("  R%d: %d", i, registers[i].word);
-            if (i < 7) printf("\t");
-            else printf("\n");
+        // Count completed instructions
+        if (pipeline[WB_STAGE].active) {
+            instructions_executed++;
         }
         
         cycle++;
     }
     
-    printf("\nPipeline execution completed after %d cycles.\n", cycle);
+    printf("\nSimulation completed in %d cycles.\n", cycle - 1);
+    printf("Final register values:\n");
+    for (int i = 0; i < 32; i++) {
+        if (registers[i] != 0) {
+            printf("R%d = %d (0x%08X)\n", i, registers[i], registers[i]);
+        }
+    }
     
-    // Print final register state
-    printf("\nFinal Register State:\n");
-    for (int i = 0; i < REGISTER_COUNT; i++) {
-        if (i % 8 == 0) printf("\n");
-        printf("R%d: %d\t", i, registers[i].word);
+    return 0;
+}
+
+void initialize() {
+    // Clear memory
+    memset(memory, 0, sizeof(memory));
+    
+    // Clear registers
+    memset(registers, 0, sizeof(registers));
+    
+    // Initialize PC to 0
+    PC = 0;
+    
+    // Initialize pipeline registers
+    for (int i = 0; i < 5; i++) {
+        memset(&pipeline[i], 0, sizeof(PipelineReg));
+    }
+}
+
+void fetch_instruction() {
+    // Only fetch if we haven't reached the end of program
+    if (PC < 1024 && memory[PC] != 0) {
+        pipeline[IF_STAGE].active = 1;
+        pipeline[IF_STAGE].instruction = memory[PC];
+        pipeline[IF_STAGE].PC = PC;
+        
+        // Increment PC for next instruction
+        PC++;
+    } else {
+        pipeline[IF_STAGE].active = 0;
+    }
+}
+
+void decode_instruction() {
+    // Move instruction from IF to ID
+    if (pipeline[IF_STAGE].active) {
+        memcpy(&pipeline[ID_STAGE], &pipeline[IF_STAGE], sizeof(PipelineReg));
+        pipeline[IF_STAGE].active = 0;
+        
+        uint32_t instr = pipeline[ID_STAGE].instruction;
+        pipeline[ID_STAGE].opcode = (instr >> 28) & 0xF;  // First 4 bits
+        
+        // Determine instruction type and decode fields
+        switch (pipeline[ID_STAGE].opcode) {
+            case ADD:
+            case SUB:
+            case SLL:
+            case SRL:
+                // R-type: opcode(4) | rd(5) | rs1(5) | rs2(5) | shamt(5) | unused(8)
+                pipeline[ID_STAGE].instr_type = R_TYPE;
+                pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
+                pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
+                pipeline[ID_STAGE].rs2 = (instr >> 13) & 0x1F;
+                pipeline[ID_STAGE].shamt = (instr >> 8) & 0x1F;
+                pipeline[ID_STAGE].reg_write = 1;
+                break;
+                
+            case MULI:
+            case ADDI:
+            case BNE:
+            case ANDI:
+            case ORI:
+            case LW:
+            case SW:
+                // I-type: opcode(4) | rd(5) | rs1(5) | immediate(18)
+                pipeline[ID_STAGE].instr_type = I_TYPE;
+                pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
+                pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
+                pipeline[ID_STAGE].immediate = instr & 0x3FFFF;  // 18 bits
+                
+                // Sign extend the immediate value if needed
+                if (pipeline[ID_STAGE].immediate & 0x20000) {
+                    pipeline[ID_STAGE].immediate |= 0xFFFC0000;  // Sign extend to 32 bits
+                }
+                
+                // Set flags for memory operations
+                if (pipeline[ID_STAGE].opcode == LW) {
+                    pipeline[ID_STAGE].mem_read = 1;
+                    pipeline[ID_STAGE].reg_write = 1;
+                } else if (pipeline[ID_STAGE].opcode == SW) {
+                    pipeline[ID_STAGE].mem_write = 1;
+                    pipeline[ID_STAGE].rs2 = pipeline[ID_STAGE].rd;  // For SW, "rd" is actually rs2
+                    pipeline[ID_STAGE].rd = 0;  // SW doesn't write to a register
+                } else if (pipeline[ID_STAGE].opcode == BNE) {
+                    pipeline[ID_STAGE].rs2 = pipeline[ID_STAGE].rd;  // For BNE, "rd" is actually rs2
+                    pipeline[ID_STAGE].rd = 0;  // BNE doesn't write to a register
+                } else {
+                    pipeline[ID_STAGE].reg_write = 1;
+                }
+                break;
+                
+            case J:
+                // J-type: opcode(4) | address(28)
+                pipeline[ID_STAGE].instr_type = J_TYPE;
+                pipeline[ID_STAGE].address = instr & 0x0FFFFFFF;  // 28 bits
+                break;
+        }
+        
+        // Read register values
+        if (pipeline[ID_STAGE].rs1 > 0) {
+            pipeline[ID_STAGE].rs1_value = registers[pipeline[ID_STAGE].rs1];
+        }
+        
+        if (pipeline[ID_STAGE].rs2 > 0) {
+            pipeline[ID_STAGE].rs2_value = registers[pipeline[ID_STAGE].rs2];
+        }
+    }
+}
+
+void execute_instruction() {
+    // Move instruction from ID to EX
+    if (pipeline[ID_STAGE].active && pipeline[ID_STAGE].stall_cycles == 0) {
+        memcpy(&pipeline[EX_STAGE], &pipeline[ID_STAGE], sizeof(PipelineReg));
+        pipeline[ID_STAGE].active = 0;
+        
+        // Execute based on opcode
+        switch (pipeline[EX_STAGE].opcode) {
+            case ADD:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].rs2_value;
+                break;
+                
+            case SUB:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value - pipeline[EX_STAGE].rs2_value;
+                break;
+                
+            case MULI:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value * pipeline[EX_STAGE].immediate;
+                break;
+                
+            case ADDI:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate;
+                break;
+                
+            case BNE:
+                if (pipeline[EX_STAGE].rs1_value != pipeline[EX_STAGE].rs2_value) {
+                    // Branch is taken
+                    PC = pipeline[EX_STAGE].PC + 1 + pipeline[EX_STAGE].immediate;
+                    pipeline[EX_STAGE].branch_taken = 1;
+                    
+                    // Flush the pipeline
+                    pipeline[IF_STAGE].active = 0;
+                    pipeline[ID_STAGE].active = 0;
+                }
+                break;
+                
+            case ANDI:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value & pipeline[EX_STAGE].immediate;
+                break;
+                
+            case ORI:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value | pipeline[EX_STAGE].immediate;
+                break;
+                
+            case J:
+                // Jump: PC = PC[31:28] || ADDRESS
+                PC = (PC & 0xF0000000) | pipeline[EX_STAGE].address;
+                
+                // Flush the pipeline
+                pipeline[IF_STAGE].active = 0;
+                pipeline[ID_STAGE].active = 0;
+                break;
+                
+            case SLL:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value << pipeline[EX_STAGE].shamt;
+                break;
+                
+            case SRL:
+                pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value >> pipeline[EX_STAGE].shamt;
+                break;
+                
+            case LW:
+                pipeline[EX_STAGE].mem_address = pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate;
+                break;
+                
+            case SW:
+                pipeline[EX_STAGE].mem_address = pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate;
+                break;
+        }
+    }
+}
+
+void memory_access() {
+    // Move instruction from EX to MEM
+    if (pipeline[EX_STAGE].active) {
+        memcpy(&pipeline[MEM_STAGE], &pipeline[EX_STAGE], sizeof(PipelineReg));
+        pipeline[EX_STAGE].active = 0;
+        
+        // Memory operations
+        if (pipeline[MEM_STAGE].mem_read) {
+            // Load word
+            if (pipeline[MEM_STAGE].mem_address >= 0 && pipeline[MEM_STAGE].mem_address < 2048) {
+                pipeline[MEM_STAGE].result = memory[pipeline[MEM_STAGE].mem_address];
+            } else {
+                printf("Memory access error: address %d is out of bounds\n", pipeline[MEM_STAGE].mem_address);
+            }
+        } else if (pipeline[MEM_STAGE].mem_write) {
+            // Store word
+            if (pipeline[MEM_STAGE].mem_address >= 0 && pipeline[MEM_STAGE].mem_address < 2048) {
+                memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs2_value;
+            } else {
+                printf("Memory access error: address %d is out of bounds\n", pipeline[MEM_STAGE].mem_address);
+            }
+        }
+    }
+}
+
+void write_back() {
+    // Move instruction from MEM to WB (or from EX to WB if no MEM stage is active)
+    if (pipeline[MEM_STAGE].active) {
+        memcpy(&pipeline[WB_STAGE], &pipeline[MEM_STAGE], sizeof(PipelineReg));
+        pipeline[MEM_STAGE].active = 0;
+    } else if (pipeline[EX_STAGE].active && 
+              !pipeline[EX_STAGE].mem_read && !pipeline[EX_STAGE].mem_write) {
+        // Skip MEM stage if not needed
+        memcpy(&pipeline[WB_STAGE], &pipeline[EX_STAGE], sizeof(PipelineReg));
+        pipeline[EX_STAGE].active = 0;
+    } else {
+        pipeline[WB_STAGE].active = 0;
+    }
+    
+    // Write back to register file
+    if (pipeline[WB_STAGE].active && pipeline[WB_STAGE].reg_write && pipeline[WB_STAGE].rd > 0) {
+        registers[pipeline[WB_STAGE].rd] = pipeline[WB_STAGE].result;
+    }
+}
+
+void detect_hazards() {
+    // Data hazards detection (RAW)
+    
+    // Check if ID stage needs a value that's being produced in EX stage
+    if (pipeline[ID_STAGE].active && pipeline[EX_STAGE].active && 
+        pipeline[EX_STAGE].reg_write && pipeline[EX_STAGE].rd > 0) {
+        
+        // Check if rs1 in ID depends on rd in EX
+        if (pipeline[ID_STAGE].rs1 == pipeline[EX_STAGE].rd) {
+            // Forward from EX to ID
+            pipeline[ID_STAGE].rs1_value = pipeline[EX_STAGE].result;
+        }
+        
+        // Check if rs2 in ID depends on rd in EX
+        if (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd) {
+            // Forward from EX to ID
+            pipeline[ID_STAGE].rs2_value = pipeline[EX_STAGE].result;
+        }
+    }
+    
+    // Check if ID stage needs a value that's being loaded from memory (LW in MEM stage)
+    if (pipeline[ID_STAGE].active && pipeline[MEM_STAGE].active && 
+        pipeline[MEM_STAGE].mem_read && pipeline[MEM_STAGE].rd > 0) {
+        
+        // Check if rs1 or rs2 in ID depends on rd in MEM
+        if (pipeline[ID_STAGE].rs1 == pipeline[MEM_STAGE].rd || 
+            pipeline[ID_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
+            
+            // Stall the ID stage until the value is available
+            pipeline[ID_STAGE].stall_cycles = 1;
+            return;
+        }
+    }
+    
+    // Decrement stall cycles if still stalling
+    if (pipeline[ID_STAGE].stall_cycles > 0) {
+        pipeline[ID_STAGE].stall_cycles--;
+    }
+}
+
+void display_processor_state(int cycle) {
+    printf("  PC: %d\n", PC);
+    
+    printf("  Pipeline:\n");
+    if (pipeline[IF_STAGE].active) {
+        printf("    IF: Instruction at address %d\n", pipeline[IF_STAGE].PC);
+    } else {
+        printf("    IF: Idle\n");
+    }
+    
+    if (pipeline[ID_STAGE].active) {
+        printf("    ID: ");
+        print_instruction(pipeline[ID_STAGE].opcode, pipeline[ID_STAGE].rd, 
+                         pipeline[ID_STAGE].rs1, pipeline[ID_STAGE].rs2,
+                         pipeline[ID_STAGE].immediate, pipeline[ID_STAGE].shamt,
+                         pipeline[ID_STAGE].address);
+        if (pipeline[ID_STAGE].stall_cycles > 0) {
+            printf(" (stalled)");
+        }
+        printf("\n");
+    } else {
+        printf("    ID: Idle\n");
+    }
+    
+    if (pipeline[EX_STAGE].active) {
+        printf("    EX: ");
+        print_instruction(pipeline[EX_STAGE].opcode, pipeline[EX_STAGE].rd, 
+                         pipeline[EX_STAGE].rs1, pipeline[EX_STAGE].rs2,
+                         pipeline[EX_STAGE].immediate, pipeline[EX_STAGE].shamt,
+                         pipeline[EX_STAGE].address);
+        printf("\n");
+    } else {
+        printf("    EX: Idle\n");
+    }
+    
+    if (cycle % 2 == 0) {  // Even cycles have MEM stage
+        if (pipeline[MEM_STAGE].active) {
+            printf("    MEM: ");
+            print_instruction(pipeline[MEM_STAGE].opcode, pipeline[MEM_STAGE].rd, 
+                             pipeline[MEM_STAGE].rs1, pipeline[MEM_STAGE].rs2,
+                             pipeline[MEM_STAGE].immediate, pipeline[MEM_STAGE].shamt,
+                             pipeline[MEM_STAGE].address);
+            printf("\n");
+        } else {
+            printf("    MEM: Idle\n");
+        }
+    } else {
+        printf("    MEM: Disabled in odd cycles\n");
+    }
+    
+    if (pipeline[WB_STAGE].active) {
+        printf("    WB: ");
+        print_instruction(pipeline[WB_STAGE].opcode, pipeline[WB_STAGE].rd, 
+                         pipeline[WB_STAGE].rs1, pipeline[WB_STAGE].rs2,
+                         pipeline[WB_STAGE].immediate, pipeline[WB_STAGE].shamt,
+                         pipeline[WB_STAGE].address);
+        if (pipeline[WB_STAGE].reg_write && pipeline[WB_STAGE].rd > 0) {
+            printf(" (R%d = %d)", pipeline[WB_STAGE].rd, pipeline[WB_STAGE].result);
+        }
+        printf("\n");
+    } else {
+        printf("    WB: Idle\n");
     }
     printf("\n");
+}
+
+void print_instruction(int opcode, int rd, int rs1, int rs2, int imm, int shamt, int addr) {
+    switch (opcode) {
+        case ADD:
+            printf("ADD R%d R%d R%d", rd, rs1, rs2);
+            break;
+        case SUB:
+            printf("SUB R%d R%d R%d", rd, rs1, rs2);
+            break;
+        case MULI:
+            printf("MULI R%d R%d %d", rd, rs1, imm);
+            break;
+        case ADDI:
+            printf("ADDI R%d R%d %d", rd, rs1, imm);
+            break;
+        case BNE:
+            printf("BNE R%d R%d %d", rs1, rs2, imm);
+            break;
+        case ANDI:
+            printf("ANDI R%d R%d %d", rd, rs1, imm);
+            break;
+        case ORI:
+            printf("ORI R%d R%d %d", rd, rs1, imm);
+            break;
+        case J:
+            printf("J %d", addr);
+            break;
+        case SLL:
+            printf("SLL R%d R%d %d", rd, rs1, shamt);
+            break;
+        case SRL:
+            printf("SRL R%d R%d %d", rd, rs1, shamt);
+            break;
+        case LW:
+            printf("LW R%d R%d %d", rd, rs1, imm);
+            break;
+        case SW:
+            printf("SW R%d R%d %d", rs2, rs1, imm);
+            break;
+        default:
+            printf("Unknown instruction");
+    }
+}
+
+// Function to load program from a text file
+int load_program_from_file(const char* filename) {
+    char* program_text = readFile((char*)filename);
+    if (program_text == NULL) {
+        return 0;
+    }
+    
+    char* line = strtok(program_text, "\r\n");
+    int instruction_count = 0;
+    
+    while (line != NULL && instruction_count < 1024) {
+        char mnemonic[10] = {0};
+        char operands[50] = {0};
+        int result = sscanf(line, "%s %[^\n]", mnemonic, operands);
+        
+        if (result >= 1) {
+            // Convert mnemonic to uppercase
+            for (int i = 0; mnemonic[i]; i++) {
+                mnemonic[i] = toupper(mnemonic[i]);
+            }
+            
+            int opcode = get_opcode(mnemonic);
+            if (opcode == -1) {
+                printf("Invalid instruction mnemonic: %s\n", mnemonic);
+                line = strtok(NULL, "\r\n");
+                continue;
+            }
+            
+            uint32_t instruction = 0;
+            // Set opcode (4 bits at positions 31-28)
+            instruction |= (opcode << 28);
+            
+            // Parse operands based on instruction type
+            switch (opcode) {
+                case ADD:
+                case SUB: {
+                    // R-type with 3 registers
+                    char reg1[5], reg2[5], reg3[5];
+                    if (sscanf(operands, "%s %s %s", reg1, reg2, reg3) == 3) {
+                        int rd = parse_register(reg1);
+                        int rs1 = parse_register(reg2);
+                        int rs2 = parse_register(reg3);
+                        
+                        if (rd >= 0 && rs1 >= 0 && rs2 >= 0) {
+                            instruction |= (rd << 23);   // rd at positions 27-23
+                            instruction |= (rs1 << 18);  // rs1 at positions 22-18
+                            instruction |= (rs2 << 13);  // rs2 at positions 17-13
+                        } else {
+                            printf("Invalid register in instruction: %s %s\n", mnemonic, operands);
+                            line = strtok(NULL, "\r\n");
+                            continue;
+                        }
+                    } else {
+                        printf("Invalid operands for %s: %s\n", mnemonic, operands);
+                        line = strtok(NULL, "\r\n");
+                        continue;
+                    }
+                    break;
+                }
+                
+                case SLL:
+                case SRL: {
+                    // R-type with 2 registers and shift amount
+                    char reg1[5], reg2[5];
+                    int shift;
+                    if (sscanf(operands, "%s %s %d", reg1, reg2, &shift) == 3) {
+                        int rd = parse_register(reg1);
+                        int rs1 = parse_register(reg2);
+                        
+                        if (rd >= 0 && rs1 >= 0) {
+                            instruction |= (rd << 23);    // rd at positions 27-23
+                            instruction |= (rs1 << 18);   // rs1 at positions 22-18
+                            instruction |= (0 << 13);     // rs2 = 0 for shift instructions
+                            instruction |= (shift << 8);  // shamt at positions 12-8
+                        } else {
+                            printf("Invalid register in instruction: %s %s\n", mnemonic, operands);
+                            line = strtok(NULL, "\r\n");
+                            continue;
+                        }
+                    } else {
+                        printf("Invalid operands for %s: %s\n", mnemonic, operands);
+                        line = strtok(NULL, "\r\n");
+                        continue;
+                    }
+                    break;
+                }
+                
+                case MULI:
+                case ADDI:
+                case ANDI:
+                case ORI:
+                case LW:
+                case SW: {
+                    // I-type with 2 registers and immediate
+                    char reg1[5], reg2[5];
+                    int imm;
+                    if (sscanf(operands, "%s %s %d", reg1, reg2, &imm) == 3) {
+                        int rd = parse_register(reg1);
+                        int rs1 = parse_register(reg2);
+                        
+                        if (rd >= 0 && rs1 >= 0) {
+                            instruction |= (rd << 23);  // rd at positions 27-23
+                            instruction |= (rs1 << 18); // rs1 at positions 22-18
+                            instruction |= (imm & 0x3FFFF); // immediate (18 bits)
+                        } else {
+                            printf("Invalid register in instruction: %s %s\n", mnemonic, operands);
+                            line = strtok(NULL, "\r\n");
+                            continue;
+                        }
+                    } else {
+                        printf("Invalid operands for %s: %s\n", mnemonic, operands);
+                        line = strtok(NULL, "\r\n");
+                        continue;
+                    }
+                    break;
+                }
+                
+                case BNE: {
+                    // BNE with 2 registers and immediate
+                    char reg1[5], reg2[5];
+                    int imm;
+                    if (sscanf(operands, "%s %s %d", reg1, reg2, &imm) == 3) {
+                        int rs1 = parse_register(reg1);
+                        int rs2 = parse_register(reg2);
+                        
+                        if (rs1 >= 0 && rs2 >= 0) {
+                            instruction |= (rs2 << 23); // rs2 at positions 27-23 (using rd field)
+                            instruction |= (rs1 << 18); // rs1 at positions 22-18
+                            instruction |= (imm & 0x3FFFF); // immediate (18 bits)
+                        } else {
+                            printf("Invalid register in instruction: %s %s\n", mnemonic, operands);
+                            line = strtok(NULL, "\r\n");
+                            continue;
+                        }
+                    } else {
+                        printf("Invalid operands for %s: %s\n", mnemonic, operands);
+                        line = strtok(NULL, "\r\n");
+                        continue;
+                    }
+                    break;
+                }
+                
+                case J: {
+                    // J-type with address
+                    int address;
+                    if (sscanf(operands, "%d", &address) == 1) {
+                        instruction |= (address & 0x0FFFFFFF); // address (28 bits)
+                    } else {
+                        printf("Invalid operands for %s: %s\n", mnemonic, operands);
+                        line = strtok(NULL, "\r\n");
+                        continue;
+                    }
+                    break;
+                }
+            }
+            
+            // Store the instruction in memory
+            memory[instruction_count++] = instruction;
+            printf("Loaded instruction %d: %s %s -> 0x%08X\n", 
+                   instruction_count-1, mnemonic, operands, instruction);
+        }
+        
+        line = strtok(NULL, "\r\n");
+    }
+    
+    free(program_text);
+    return instruction_count;
 }
