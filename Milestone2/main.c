@@ -359,12 +359,12 @@ void execute_instruction() {
 
     case LW:
       pipeline[EX_STAGE].mem_address =
-          pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate + 1024;
+          pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
       break;
 
     case SW:
       pipeline[EX_STAGE].mem_address =
-          pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate + 1024;
+          pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
       break;
     }
   }
@@ -390,7 +390,7 @@ void memory_access() {
       // Store word
       if (pipeline[MEM_STAGE].mem_address >= 0 &&
           pipeline[MEM_STAGE].mem_address < 2048) {
-        memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs2_value;
+        memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs1_value;
       } else {
         printf("Memory access error: address %d is out of bounds\n",
                pipeline[MEM_STAGE].mem_address);
