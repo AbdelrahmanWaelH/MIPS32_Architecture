@@ -232,6 +232,12 @@ void initialize() {
 }
 
 void fetch_instruction() {
+  // Check if ID stage is stalled - don't fetch new instructions
+  if (pipeline[ID_STAGE].stall_cycles > 0) {
+    // Keep the current instruction in the IF stage
+    return;
+  }
+  
   // Only fetch if we haven't reached the end of program
   if (PC < 1024 && memory[PC] != 0) {
     pipeline[IF_STAGE].active = 1;
@@ -246,6 +252,12 @@ void fetch_instruction() {
 }
 
 void decode_instruction() {
+  // If we're stalling, don't perform decoding
+  if (pipeline[ID_STAGE].stall_cycles > 0) {
+    // Don't move instruction from IF to ID when stalling
+    return;
+  }
+
   // Move instruction from IF to ID if the ID stage is now free
   if (!pipeline[ID_STAGE].active && pipeline[IF_STAGE].active) {
     memcpy(&pipeline[ID_STAGE], &pipeline[IF_STAGE], sizeof(PipelineReg));
@@ -258,7 +270,7 @@ void decode_instruction() {
     pipeline[ID_STAGE].cycles_in_stage++;
 
     // Only perform decoding on the second cycle in ID stage
-    if (pipeline[ID_STAGE].cycles_in_stage <= 2) {
+    if (pipeline[ID_STAGE].cycles_in_stage == 2) {
       uint32_t instr = pipeline[ID_STAGE].instruction;
       pipeline[ID_STAGE].opcode = (instr >> 28) & 0xF; // First 4 bits
 
@@ -332,20 +344,24 @@ void decode_instruction() {
         pipeline[ID_STAGE].rs2_value = registers[pipeline[ID_STAGE].rs2];
       }
     }
-
-    // Check if we're ready to move to the next stage
-    if (pipeline[ID_STAGE].cycles_in_stage < 2 || pipeline[ID_STAGE].stall_cycles > 0) {
-      // Not ready yet - either still in first cycle or stalled
-      return;
-    }
   }
-
 }
 
 void execute_instruction() {
   // Process instruction already in EX stage
   if (pipeline[EX_STAGE].active) {
     pipeline[EX_STAGE].cycles_in_stage++;
+
+    // Check for forwarding from MEM stage before executing
+    if (pipeline[MEM_STAGE].active && pipeline[MEM_STAGE].reg_write && pipeline[MEM_STAGE].rd > 0) {
+      // Forward from MEM to EX if needed
+      if (pipeline[EX_STAGE].rs1 == pipeline[MEM_STAGE].rd) {
+        pipeline[EX_STAGE].rs1_value = pipeline[MEM_STAGE].result;
+      }
+      if (pipeline[EX_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
+        pipeline[EX_STAGE].rs2_value = pipeline[MEM_STAGE].result;
+      }
+    }
 
     // Only perform execution on the second cycle in EX stage
     if (pipeline[EX_STAGE].cycles_in_stage == 2) {
@@ -453,11 +469,33 @@ void memory_access() {
       // Load word
       if (pipeline[MEM_STAGE].mem_address >= 0 &&
           pipeline[MEM_STAGE].mem_address < 2048) {
+        // Read value from memory
         pipeline[MEM_STAGE].result = memory[pipeline[MEM_STAGE].mem_address];
-          } else {
-            printf("Memory access error: address %d is out of bounds\n",
-                   pipeline[MEM_STAGE].mem_address);
+        
+        // Forwarding from MEM to EX (if needed)
+        // If the EX stage needs the value we just loaded, forward it directly
+        if (pipeline[EX_STAGE].active) {
+          if (pipeline[EX_STAGE].rs1 > 0 && pipeline[EX_STAGE].rs1 == pipeline[MEM_STAGE].rd) {
+            pipeline[EX_STAGE].rs1_value = pipeline[MEM_STAGE].result;
           }
+          if (pipeline[EX_STAGE].rs2 > 0 && pipeline[EX_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
+            pipeline[EX_STAGE].rs2_value = pipeline[MEM_STAGE].result;
+          }
+        }
+        
+        // Forward to ID stage as well if needed
+        if (pipeline[ID_STAGE].active && pipeline[ID_STAGE].cycles_in_stage > 0) {
+          if (pipeline[ID_STAGE].rs1 > 0 && pipeline[ID_STAGE].rs1 == pipeline[MEM_STAGE].rd) {
+            pipeline[ID_STAGE].rs1_value = pipeline[MEM_STAGE].result;
+          }
+          if (pipeline[ID_STAGE].rs2 > 0 && pipeline[ID_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
+            pipeline[ID_STAGE].rs2_value = pipeline[MEM_STAGE].result;
+          }
+        }
+      } else {
+        printf("Memory access error: address %d is out of bounds\n",
+               pipeline[MEM_STAGE].mem_address);
+      }
     } else if (pipeline[MEM_STAGE].mem_write) {
       // Store word
       if (pipeline[MEM_STAGE].mem_address >= 0 &&
@@ -466,12 +504,13 @@ void memory_access() {
         previous_memory[pipeline[MEM_STAGE].mem_address] = memory[pipeline[MEM_STAGE].mem_address];
         // Mark this memory location as updated
         memory_updated[pipeline[MEM_STAGE].mem_address] = true;
-        // Update the memory - for SW instruction, rs2_value contains the value to store
+        
+        // For SW instruction, rs2_value contains the value to store
         memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs2_value;
-          } else {
-            printf("Memory access error: address %d is out of bounds\n",
-                   pipeline[MEM_STAGE].mem_address);
-          }
+      } else {
+        printf("Memory access error: address %d is out of bounds\n",
+               pipeline[MEM_STAGE].mem_address);
+      }
     }
   }
 }
@@ -497,42 +536,64 @@ void write_back() {
   }
 }
 void detect_hazards() {
-  // Only detect hazards after the ID and EX stages have completed their second cycle
+  bool need_stall = false;
 
-  // Check if ID stage has completed its first cycle (since decoding happens in the second cycle)
-  if (pipeline[ID_STAGE].active && pipeline[ID_STAGE].cycles_in_stage == 2) {
-
-    // Check if EX stage is producing a value needed by ID
-    if (pipeline[EX_STAGE].active && pipeline[EX_STAGE].cycles_in_stage == 2 &&
-        pipeline[EX_STAGE].reg_write && pipeline[EX_STAGE].rd > 0) {
-
-      // Check if rs1 in ID depends on rd in EX
-      if (pipeline[ID_STAGE].rs1 == pipeline[EX_STAGE].rd) {
-        // Forward from EX to ID
-        pipeline[ID_STAGE].rs1_value = pipeline[EX_STAGE].result;
-      }
-
-      // Check if rs2 in ID depends on rd in EX
-      if (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd) {
-        // Forward from EX to ID
-        pipeline[ID_STAGE].rs2_value = pipeline[EX_STAGE].result;
-      }
+  // Check for hazards in the ID stage
+  if (pipeline[ID_STAGE].active && pipeline[ID_STAGE].cycles_in_stage > 0) {
+    
+    // Check for data hazards with EX stage (forwarding from EX to ID)
+    if (pipeline[EX_STAGE].active && pipeline[EX_STAGE].reg_write && pipeline[EX_STAGE].rd > 0) {
+      // Forward from EX to ID if values are ready
+      if (pipeline[EX_STAGE].cycles_in_stage == 2) {
+        if (pipeline[ID_STAGE].rs1 == pipeline[EX_STAGE].rd) {
+          pipeline[ID_STAGE].rs1_value = pipeline[EX_STAGE].result;
         }
-
-    // Check if ID stage needs a value that's being loaded from memory (LW in MEM stage)
-    if (pipeline[MEM_STAGE].active && pipeline[MEM_STAGE].mem_read && pipeline[MEM_STAGE].rd > 0) {
-      // Check if rs1 or rs2 in ID depends on rd in MEM
-      if (pipeline[ID_STAGE].rs1 == pipeline[MEM_STAGE].rd ||
-          pipeline[ID_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
-        // Stall the ID stage until the value is available
-        pipeline[ID_STAGE].stall_cycles = 1;
-        return;
-          }
+        if (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd) {
+          pipeline[ID_STAGE].rs2_value = pipeline[EX_STAGE].result;
+        }
+      }
+    }
+    
+    // Check for data hazards with MEM stage
+    if (pipeline[MEM_STAGE].active && pipeline[MEM_STAGE].reg_write && pipeline[MEM_STAGE].rd > 0) {
+      // Handle forwarding from MEM to ID
+      if (pipeline[ID_STAGE].rs1 == pipeline[MEM_STAGE].rd) {
+        pipeline[ID_STAGE].rs1_value = pipeline[MEM_STAGE].result;
+      }
+      if (pipeline[ID_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
+        pipeline[ID_STAGE].rs2_value = pipeline[MEM_STAGE].result;
+      }
+    }
+    
+    // Special case: If SW in ID depends on LW in EX (SW with source register being loaded)
+    if (pipeline[ID_STAGE].opcode == SW && pipeline[EX_STAGE].active && 
+        pipeline[EX_STAGE].opcode == LW && pipeline[EX_STAGE].rd > 0) {
+      // If SW source register (rs2) is equal to LW destination register (rd)
+      if (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd) {
+        // Need to stall until load completes
+        pipeline[ID_STAGE].stall_cycles = 2;
+        need_stall = true;
+      }
+    }
+    
+    // Check for load-use hazards (LW followed immediately by an instruction that uses the loaded value)
+    if (pipeline[EX_STAGE].active && pipeline[EX_STAGE].opcode == LW && pipeline[EX_STAGE].rd > 0) {
+      // Check if ID stage depends on a value being loaded in EX
+      if ((pipeline[ID_STAGE].rs1 == pipeline[EX_STAGE].rd && pipeline[ID_STAGE].rs1 > 0) ||
+          (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd && pipeline[ID_STAGE].rs2 > 0)) {
+        // Stall for 2 cycles (or until LW completes memory stage)
+        pipeline[ID_STAGE].stall_cycles = 2;
+        need_stall = true;
+      }
     }
   }
 
-  // Decrement stall cycles if still stalling
-  if (pipeline[ID_STAGE].stall_cycles > 0) {
+  // Handle stalling
+  if (need_stall) {
+    // Keep ID stage active but don't allow it to progress
+    return;
+  } else if (pipeline[ID_STAGE].stall_cycles > 0) {
+    // We're still stalling from a previous hazard
     pipeline[ID_STAGE].stall_cycles--;
   }
 }
