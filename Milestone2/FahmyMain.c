@@ -148,7 +148,7 @@ void runPipeline() {
 }
 
 void fetch() {
-    if (fetchReady) {
+    if (fetchReady && programCounter < DATA_OFFSET) {
         pipeline.fetchPhaseInst = mainMemory[programCounter];
         programCounter++;
         fetchReady = false;
@@ -156,7 +156,7 @@ void fetch() {
         pipeline.fetchPhaseInst = 0;
         fetchReady = true;
     }
-}
+} //TODO: handle PC reaching 1024
 
 void decode() {
 
@@ -226,6 +226,7 @@ void execute() {
                 temporaryExecuteDestination = programCounter;
                 temporaryShouldBranch =
                 pipeline.decodedInstructionFields.r1val != pipeline.decodedInstructionFields.r2val ? true : false;
+                if (temporaryShouldBranch){pipeline.fetchPhaseInst = 0; pipeline.decodePhaseInst = 0;}
                 break;
             case 5: //ANDI
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val & pipeline.decodedInstructionFields.immediate;
