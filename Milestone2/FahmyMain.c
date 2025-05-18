@@ -54,6 +54,8 @@ int programCounter = 0;
 struct Pipeline pipeline;
 int temporaryExecuteResult = 0;
 int temporaryExecuteDestination = 0;
+
+bool isFlushing = 0;
 bool temporaryShouldBranch = 0;
 
 char* filepath = "../FahmyCodeTest";
@@ -147,8 +149,15 @@ void runPipeline() {
 
 }
 
+void flushPipeline() {
+    pipeline.fetchPhaseInst = 0;
+    pipeline.decodePhaseInst = 0;
+    pipeline.decodeCyclesRemaining = 0;
+    isFlushing = true;
+}
+
 void fetch() {
-    if (fetchReady && programCounter < DATA_OFFSET) {
+    if (fetchReady && programCounter < DATA_OFFSET && !isFlushing) {
         pipeline.fetchPhaseInst = mainMemory[programCounter];
         programCounter++;
         fetchReady = false;
@@ -226,7 +235,8 @@ void execute() {
                 temporaryExecuteDestination = programCounter;
                 temporaryShouldBranch =
                 pipeline.decodedInstructionFields.r1val != pipeline.decodedInstructionFields.r2val ? true : false;
-                if (temporaryShouldBranch){pipeline.fetchPhaseInst = 0; pipeline.decodePhaseInst = 0;}
+                if (temporaryShouldBranch)
+                    flushPipeline();
                 break;
             case 5: //ANDI
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val & pipeline.decodedInstructionFields.immediate;
@@ -258,6 +268,8 @@ void execute() {
                 break;
         }
 
+
+
         pipeline.executeCyclesRemaining--;
     }
 
@@ -270,6 +282,7 @@ void memory() {
 
     if (pipeline.executeCyclesRemaining == 0) {
         pipeline.memoryPhaseInst = pipeline.executePhaseInst;
+        pipeline.executePhaseInst = 0;
 
         //We don't use decoded parts because next instruction is decoded and we lose the values of current instruction
         if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10)
@@ -299,7 +312,9 @@ void writeback() {
         }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 4) {
 
             if (temporaryShouldBranch) {
-                programCounter = temporaryExecuteResult;
+                programCounter = temporaryExecuteResult - 2;
+                isFlushing = false;
+
             }
 
         } else if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10){
@@ -496,7 +511,7 @@ void printRegistersMinimal() {
 }
 
 void printPipeline() {
-    printf("  PC: %d\n", programCounter);
+    printf("  PC: %d\n", programCounter-1);
     printf("  IF:  %s\n", getInstructionText(pipeline.fetchPhaseInst));
     printf("  ID:  %s\n", getInstructionText(pipeline.decodePhaseInst));
     printf("  EX:  %s\n", getInstructionText(pipeline.executePhaseInst));
