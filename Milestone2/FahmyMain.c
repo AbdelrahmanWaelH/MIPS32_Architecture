@@ -54,9 +54,12 @@ int programCounter = 0;
 struct Pipeline pipeline;
 int temporaryExecuteResult = 0;
 int temporaryExecuteDestination = 0;
+int temporaryStoreSource = 0;
 
 bool isFlushing = 0;
 bool temporaryShouldBranch = 0;
+bool isForwarding = 0;
+int forwardingDestination = 0;
 
 char* filepath = "../FahmyCodeTest";
 int cycle = 1;
@@ -157,8 +160,44 @@ void flushPipeline() {
     isFlushing = true;
 }
 
+void checkForwarding() {
+
+
+
+    // //Compare execute dest. with decode srcs
+    // if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r2 && temporaryExecuteDestination == pipeline.decodedInstructionFields.r3) {
+    //     isForwarding = true;
+    //     forwardingDestination = pipeline.decodedInstructionFields.r2;
+    // }else if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r2) {
+    //     isForwarding = true;
+    //     forwardingDestination = pipeline.decodedInstructionFields.r2;
+    // }else if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r3) {
+    //     isForwarding = true;
+    //     forwardingDestination = pipeline.decodedInstructionFields.r3;
+    // }
+
+    if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r1 && temporaryExecuteDestination != 0) {
+        isForwarding = true;
+        forwardingDestination = pipeline.decodedInstructionFields.r1;
+    }
+
+
+    if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r2 && temporaryExecuteDestination != 0) {
+        isForwarding = true;
+        forwardingDestination = pipeline.decodedInstructionFields.r2;
+    }
+
+    if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r3 && temporaryExecuteDestination != 0) {
+        isForwarding = true;
+        forwardingDestination = pipeline.decodedInstructionFields.r3;
+    }
+
+
+
+}
+
 void fetch() {
-    if (fetchReady && programCounter < DATA_OFFSET && !isFlushing) {
+    if (fetchReady && programCounter < lineCount && !isFlushing) {
         pipeline.fetchPhaseInst = mainMemory[programCounter];
         programCounter++;
         fetchReady = false;
@@ -193,6 +232,9 @@ void decode() {
         pipeline.decodedInstructionFields.r1val = registers[pipeline.decodedInstructionFields.r1];
         pipeline.decodedInstructionFields.r2val = registers[pipeline.decodedInstructionFields.r2];
         pipeline.decodedInstructionFields.r3val = registers[pipeline.decodedInstructionFields.r3];
+
+        checkForwarding();
+
         pipeline.decodeCyclesRemaining--;
     }
 
@@ -214,32 +256,49 @@ void execute() {
         pipeline.executeCyclesRemaining = 1;
 
     }else {
+
+        if (pipeline.decodedInstructionFields.r1 == forwardingDestination && isForwarding)
+            pipeline.decodedInstructionFields.r1val = temporaryExecuteResult;
+        if (pipeline.decodedInstructionFields.r2 == forwardingDestination && isForwarding)
+            pipeline.decodedInstructionFields.r2val = temporaryExecuteResult;
+        if (pipeline.decodedInstructionFields.r3 == forwardingDestination && isForwarding)
+            pipeline.decodedInstructionFields.r3val = temporaryExecuteResult;
+
         switch (pipeline.decodedInstructionFields.opcode) {
             case 0: //ADD
+
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.r3val;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+
                 break;
             case 1: //SUB
+
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val - pipeline.decodedInstructionFields.r3val;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+
                 break;
             case 2: //MULI
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val * pipeline.decodedInstructionFields.immediate;
+
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val * pipeline.decodedInstructionFields.r3val;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 3: //ADDI
+
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 4: //BNE
                 temporaryExecuteResult = programCounter + 1 + pipeline.decodedInstructionFields.immediate;
-                temporaryExecuteDestination = programCounter;
+                temporaryExecuteDestination = -1;
+
+
                 temporaryShouldBranch =
-                pipeline.decodedInstructionFields.r1val != pipeline.decodedInstructionFields.r2val ? true : false;
+                    pipeline.decodedInstructionFields.r1val != pipeline.decodedInstructionFields.r2val ? true : false;
                 if (temporaryShouldBranch)
                     flushPipeline();
                 break;
             case 5: //ANDI
+
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val & pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
@@ -249,28 +308,34 @@ void execute() {
                 break;
             case 7: //J
                 temporaryExecuteResult = (programCounter & 0xF0000000) | pipeline.decodedInstructionFields.address;
-                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                temporaryExecuteDestination = -1;
+                flushPipeline();
                 break;
             case 8: //SLL
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2 << pipeline.decodedInstructionFields.shamt;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val << pipeline.decodedInstructionFields.shamt;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 9: //SRL
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2 >> pipeline.decodedInstructionFields.shamt;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val >> pipeline.decodedInstructionFields.shamt;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 10: //LW
+
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
             case 11: //SW
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
-                //Must pass through memory phase
-                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                temporaryStoreSource = pipeline.decodedInstructionFields.r1;
+                temporaryExecuteDestination = -1;
+
                 break;
             default:
                 break;
         }
 
 
-
+        isForwarding = false;
         pipeline.executeCyclesRemaining--;
     }
 
@@ -289,7 +354,7 @@ void memory() {
         if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10)
             temporaryExecuteResult = mainMemory[temporaryExecuteResult];
         if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11)
-            mainMemory[temporaryExecuteResult] = registers[temporaryExecuteDestination]; //not entirely correct, performs WB in memory stage
+            mainMemory[temporaryExecuteResult] = registers[temporaryStoreSource]; //not entirely correct, performs WB in memory stage
     }else {
         pipeline.memoryPhaseInst = 0;
     }
@@ -299,6 +364,8 @@ void memory() {
 
 
 void writeback() {
+
+    if (temporaryExecuteDestination == 0) return;
 
     if (pipeline.writebackPhaseInst == 0 && pipeline.memoryPhaseInst == 0) return;
 
@@ -311,6 +378,7 @@ void writeback() {
             printf("\nR%d set to %d\n", temporaryExecuteDestination, temporaryExecuteResult);
         }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 7) {
                 programCounter = temporaryExecuteResult;
+                isFlushing = false;
         }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 4) {
 
             if (temporaryShouldBranch) {
@@ -320,9 +388,10 @@ void writeback() {
             }
 
         } else if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10){
+            if (temporaryExecuteDestination > 0 && temporaryExecuteDestination < 32)
             registers[temporaryExecuteDestination] = temporaryExecuteResult;
-        } else {
-            pipeline.writebackPhaseInst = 0;
+        } else if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11) {
+
         }
 
     }else {
