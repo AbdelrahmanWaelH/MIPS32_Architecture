@@ -59,6 +59,7 @@ typedef struct {
   int branch_taken;     // Was a branch taken?
   int mem_address;      // Memory address to access
   int stall_cycles;     // Number of cycles to stall
+  int cycles_in_stage;    // cycles spent in this stage (used in decode and execute to detect the second cycle for execution)
 } PipelineReg;
 
 PipelineReg pipeline[5]; // One for each stage
@@ -104,7 +105,7 @@ int get_opcode(const char *mnemonic) {
     return SW;
   return -1; // Invalid mnemonic
 }
-const char *program_file = "../FahmyCodeTest";
+const char *program_file = "test_combined_hazards.txt";
 
 // Helper function to parse register number
 int parse_register(const char *reg_str) {
@@ -119,6 +120,9 @@ bool check_running(int total_instructions) {
   return PC < total_instructions || pipeline[0].active || pipeline[1].active ||
          pipeline[2].active || pipeline[3].active || pipeline[4].active;
 }
+// Delay in cycles
+// Read the last pages of the project !
+// The prints should be updated to match the requirement
 
 int main() {
   initialize();
@@ -164,6 +168,7 @@ int main() {
     // Count completed instructions
     if (pipeline[WB_STAGE].active) {
       instructions_executed++;
+      pipeline[WB_STAGE].active = 0;
     }
 
     cycle++;
@@ -211,169 +216,199 @@ void fetch_instruction() {
 }
 
 void decode_instruction() {
-  // Move instruction from IF to ID
-  if (pipeline[IF_STAGE].active) {
+  // Move instruction from IF to ID if the ID stage is now free
+  if (!pipeline[ID_STAGE].active && pipeline[IF_STAGE].active) {
     memcpy(&pipeline[ID_STAGE], &pipeline[IF_STAGE], sizeof(PipelineReg));
+    pipeline[ID_STAGE].cycles_in_stage = 0;
     pipeline[IF_STAGE].active = 0;
+  }
 
-    uint32_t instr = pipeline[ID_STAGE].instruction;
-    pipeline[ID_STAGE].opcode = (instr >> 28) & 0xF; // First 4 bits
+  // Process instruction already in ID stage
+  if (pipeline[ID_STAGE].active) {
+    pipeline[ID_STAGE].cycles_in_stage++;
 
-    // Determine instruction type and decode fields
-    switch (pipeline[ID_STAGE].opcode) {
-    case ADD:
-    case SUB:
-    case SLL:
-    case SRL:
-      // R-type: opcode(4) | rd(5) | rs1(5) | rs2(5) | shamt(5) | unused(8)
-      pipeline[ID_STAGE].instr_type = R_TYPE;
-      pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
-      pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
-      pipeline[ID_STAGE].rs2 = (instr >> 13) & 0x1F;
-      pipeline[ID_STAGE].shamt = (instr >> 8) & 0x1F;
-      pipeline[ID_STAGE].reg_write = 1;
-      break;
+    // Only perform decoding on the second cycle in ID stage
+    if (pipeline[ID_STAGE].cycles_in_stage <= 2) {
+      uint32_t instr = pipeline[ID_STAGE].instruction;
+      pipeline[ID_STAGE].opcode = (instr >> 28) & 0xF; // First 4 bits
 
-    case MULI:
-    case ADDI:
-    case BNE:
-    case ANDI:
-    case ORI:
-    case LW:
-    case SW:
-      // I-type: opcode(4) | rd(5) | rs1(5) | immediate(18)
-      pipeline[ID_STAGE].instr_type = I_TYPE;
-      pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
-      pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
-      pipeline[ID_STAGE].immediate = instr & 0x3FFFF; // 18 bits
+      // Determine instruction type and decode fields
+      switch (pipeline[ID_STAGE].opcode) {
+      case ADD:
+      case SUB:
+      case SLL:
+      case SRL:
+        // R-type: opcode(4) | rd(5) | rs1(5) | rs2(5) | shamt(5) | unused(8)
+        pipeline[ID_STAGE].instr_type = R_TYPE;
+        pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
+        pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
+        pipeline[ID_STAGE].rs2 = (instr >> 13) & 0x1F;
+        pipeline[ID_STAGE].shamt = (instr >> 8) & 0x1F;
+        pipeline[ID_STAGE].reg_write = 1;
+        break;
 
-      // Sign extend the immediate value if needed
-      if ((pipeline[ID_STAGE].immediate & 0x20000) >> 17 == 1) {
-        pipeline[ID_STAGE].immediate |= 0xFFFC0000; // Sign extend to 32 bits
+      case MULI:
+      case ADDI:
+      case BNE:
+      case ANDI:
+      case ORI:
+      case LW:
+      case SW:
+        // I-type: opcode(4) | rd(5) | rs1(5) | immediate(18)
+        pipeline[ID_STAGE].instr_type = I_TYPE;
+        pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
+        pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
+        pipeline[ID_STAGE].immediate = instr & 0x3FFFF; // 18 bits
+
+        // Sign extend the immediate value if needed
+        if ((pipeline[ID_STAGE].immediate & 0x20000) >> 17 == 1) {
+          pipeline[ID_STAGE].immediate |= 0xFFFC0000; // Sign extend to 32 bits
+        }
+
+        // Set flags for memory operations
+        if (pipeline[ID_STAGE].opcode == LW) {
+          pipeline[ID_STAGE].mem_read = 1;
+          pipeline[ID_STAGE].reg_write = 1;
+        } else if (pipeline[ID_STAGE].opcode == SW) {
+          pipeline[ID_STAGE].mem_write = 1;
+          pipeline[ID_STAGE].rs2 =
+              pipeline[ID_STAGE].rd; // For SW, "rd" is actually rs2
+          pipeline[ID_STAGE].rd = 0; // SW doesn't write to a register
+        } else if (pipeline[ID_STAGE].opcode == BNE) {
+          pipeline[ID_STAGE].rs2 =
+              pipeline[ID_STAGE].rd; // For BNE, "rd" is actually rs2
+          pipeline[ID_STAGE].rd = 0; // BNE doesn't write to a register
+        } else {
+          pipeline[ID_STAGE].reg_write = 1;
+        }
+        break;
+
+      case J:
+        // J-type: opcode(4) | address(28)
+        pipeline[ID_STAGE].instr_type = J_TYPE;
+        pipeline[ID_STAGE].address = instr & 0x0FFFFFFF; // 28 bits
+        break;
       }
 
-      // Set flags for memory operations
-      if (pipeline[ID_STAGE].opcode == LW) {
-        pipeline[ID_STAGE].mem_read = 1;
-        pipeline[ID_STAGE].reg_write = 1;
-      } else if (pipeline[ID_STAGE].opcode == SW) {
-        pipeline[ID_STAGE].mem_write = 1;
-        pipeline[ID_STAGE].rs2 =
-            pipeline[ID_STAGE].rd; // For SW, "rd" is actually rs2
-        pipeline[ID_STAGE].rd = 0; // SW doesn't write to a register
-      } else if (pipeline[ID_STAGE].opcode == BNE) {
-        pipeline[ID_STAGE].rs2 =
-            pipeline[ID_STAGE].rd; // For BNE, "rd" is actually rs2
-        pipeline[ID_STAGE].rd = 0; // BNE doesn't write to a register
-      } else {
-        pipeline[ID_STAGE].reg_write = 1;
+      // Read register values
+      if (pipeline[ID_STAGE].rs1 > 0) {
+        pipeline[ID_STAGE].rs1_value = registers[pipeline[ID_STAGE].rs1];
       }
-      break;
 
-    case J:
-      // J-type: opcode(4) | address(28)
-      pipeline[ID_STAGE].instr_type = J_TYPE;
-      pipeline[ID_STAGE].address = instr & 0x0FFFFFFF; // 28 bits
-      break;
+      if (pipeline[ID_STAGE].rs2 > 0) {
+        pipeline[ID_STAGE].rs2_value = registers[pipeline[ID_STAGE].rs2];
+      }
     }
 
-    // Read register values
-    if (pipeline[ID_STAGE].rs1 > 0) {
-      pipeline[ID_STAGE].rs1_value = registers[pipeline[ID_STAGE].rs1];
-    }
-
-    if (pipeline[ID_STAGE].rs2 > 0) {
-      pipeline[ID_STAGE].rs2_value = registers[pipeline[ID_STAGE].rs2];
+    // Check if we're ready to move to the next stage
+    if (pipeline[ID_STAGE].cycles_in_stage < 2 || pipeline[ID_STAGE].stall_cycles > 0) {
+      // Not ready yet - either still in first cycle or stalled
+      return;
     }
   }
+
 }
 
 void execute_instruction() {
-  // Move instruction from ID to EX
-  if (pipeline[ID_STAGE].active && pipeline[ID_STAGE].stall_cycles == 0) {
-    memcpy(&pipeline[EX_STAGE], &pipeline[ID_STAGE], sizeof(PipelineReg));
-    pipeline[ID_STAGE].active = 0;
+  // Process instruction already in EX stage
+  if (pipeline[EX_STAGE].active) {
+    pipeline[EX_STAGE].cycles_in_stage++;
 
-    // Execute based on opcode
-    switch (pipeline[EX_STAGE].opcode) {
-    case ADD:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].rs2_value;
-      break;
+    // Only perform execution on the second cycle in EX stage
+    if (pipeline[EX_STAGE].cycles_in_stage == 2) {
+      // Execute based on opcode
+      switch (pipeline[EX_STAGE].opcode) {
+      case ADD:
+        pipeline[EX_STAGE].result =
+            pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].rs2_value;
+        break;
 
-    case SUB:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value - pipeline[EX_STAGE].rs2_value;
-      break;
+      case SUB:
+        pipeline[EX_STAGE].result =
+            pipeline[EX_STAGE].rs1_value - pipeline[EX_STAGE].rs2_value;
+        break;
 
-    case MULI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value * pipeline[EX_STAGE].immediate;
-      break;
+      case MULI:
+        pipeline[EX_STAGE].result =
+            pipeline[EX_STAGE].rs1_value * pipeline[EX_STAGE].immediate;
+        break;
 
-    case ADDI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate;
-      break;
+      case ADDI:
+        pipeline[EX_STAGE].result =
+            pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate;
+        break;
 
-    case BNE:
-      if (pipeline[EX_STAGE].rs1_value != pipeline[EX_STAGE].rs2_value) {
-        // Branch is taken
-        PC = pipeline[EX_STAGE].PC + 1 + pipeline[EX_STAGE].immediate;
-        pipeline[EX_STAGE].branch_taken = 1;
+      case BNE:
+        if (pipeline[EX_STAGE].rs1_value != pipeline[EX_STAGE].rs2_value) {
+          // Branch is taken
+          PC = pipeline[EX_STAGE].PC + 1 + pipeline[EX_STAGE].immediate;
+          pipeline[EX_STAGE].branch_taken = 1;
+
+          // Flush the pipeline
+          pipeline[IF_STAGE].active = 0;
+          pipeline[ID_STAGE].active = 0;
+        }
+        break;
+
+      case ANDI:
+        pipeline[EX_STAGE].result =
+            pipeline[EX_STAGE].rs1_value & pipeline[EX_STAGE].immediate;
+        break;
+
+      case ORI:
+        pipeline[EX_STAGE].result =
+            pipeline[EX_STAGE].rs1_value | pipeline[EX_STAGE].immediate;
+        break;
+
+      case J:
+        // Jump: PC = PC[31:28] || ADDRESS
+        PC = (PC & 0xF0000000) | pipeline[EX_STAGE].address;
 
         // Flush the pipeline
         pipeline[IF_STAGE].active = 0;
         pipeline[ID_STAGE].active = 0;
+        break;
+
+      case SLL:
+        pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value
+                                    << pipeline[EX_STAGE].shamt;
+        break;
+
+      case SRL:
+        pipeline[EX_STAGE].result =
+            pipeline[EX_STAGE].rs1_value >> pipeline[EX_STAGE].shamt;
+        break;
+
+      case LW:
+      case SW:
+        pipeline[EX_STAGE].mem_address =
+            pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
+        break;
       }
-      break;
-
-    case ANDI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value & pipeline[EX_STAGE].immediate;
-      break;
-
-    case ORI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value | pipeline[EX_STAGE].immediate;
-      break;
-
-    case J:
-      // Jump: PC = PC[31:28] || ADDRESS
-      PC = (PC & 0xF0000000) | pipeline[EX_STAGE].address;
-
-      // Flush the pipeline
-      pipeline[IF_STAGE].active = 0;
-      pipeline[ID_STAGE].active = 0;
-      break;
-
-    case SLL:
-      pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value
-                                  << pipeline[EX_STAGE].shamt;
-      break;
-
-    case SRL:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value >> pipeline[EX_STAGE].shamt;
-      break;
-
-    case LW:
-      pipeline[EX_STAGE].mem_address =
-          pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
-      break;
-
-    case SW:
-      pipeline[EX_STAGE].mem_address =
-          pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
-      break;
     }
+
+    // Check if we're ready to move to the next stage
+    if (pipeline[EX_STAGE].cycles_in_stage < 2) {
+      // Not ready yet - still in first cycle
+      return;
+    }
+  }
+
+  // Move instruction from ID to EX if the EX stage is now free and ID has completed
+  if (!pipeline[EX_STAGE].active && pipeline[ID_STAGE].active &&
+      pipeline[ID_STAGE].cycles_in_stage >= 2 && pipeline[ID_STAGE].stall_cycles == 0) {
+    memcpy(&pipeline[EX_STAGE], &pipeline[ID_STAGE], sizeof(PipelineReg));
+    pipeline[EX_STAGE].cycles_in_stage = 1; // Starting first cycle in EX stage
+    pipeline[ID_STAGE].active = 0;
   }
 }
 
+
 void memory_access() {
-  // Move instruction from EX to MEM
-  if (pipeline[EX_STAGE].active) {
+  // Move instruction from EX to MEM only if EX has completed its 2 cycles
+  if (pipeline[EX_STAGE].active && pipeline[EX_STAGE].cycles_in_stage >= 2) {
     memcpy(&pipeline[MEM_STAGE], &pipeline[EX_STAGE], sizeof(PipelineReg));
+    pipeline[MEM_STAGE].cycles_in_stage = 1;
     pipeline[EX_STAGE].active = 0;
 
     // Memory operations
@@ -382,35 +417,29 @@ void memory_access() {
       if (pipeline[MEM_STAGE].mem_address >= 0 &&
           pipeline[MEM_STAGE].mem_address < 2048) {
         pipeline[MEM_STAGE].result = memory[pipeline[MEM_STAGE].mem_address];
-      } else {
-        printf("Memory access error: address %d is out of bounds\n",
-               pipeline[MEM_STAGE].mem_address);
-      }
+          } else {
+            printf("Memory access error: address %d is out of bounds\n",
+                   pipeline[MEM_STAGE].mem_address);
+          }
     } else if (pipeline[MEM_STAGE].mem_write) {
       // Store word
       if (pipeline[MEM_STAGE].mem_address >= 0 &&
           pipeline[MEM_STAGE].mem_address < 2048) {
         memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs1_value;
-      } else {
-        printf("Memory access error: address %d is out of bounds\n",
-               pipeline[MEM_STAGE].mem_address);
-      }
+          } else {
+            printf("Memory access error: address %d is out of bounds\n",
+                   pipeline[MEM_STAGE].mem_address);
+          }
     }
   }
 }
 
 void write_back() {
-  // Move instruction from MEM to WB (or from EX to WB if no MEM stage is
-  // active)
+  // Move instruction from MEM to WB
   if (pipeline[MEM_STAGE].active) {
     memcpy(&pipeline[WB_STAGE], &pipeline[MEM_STAGE], sizeof(PipelineReg));
     pipeline[MEM_STAGE].active = 0;
-  } else if (pipeline[EX_STAGE].active && !pipeline[EX_STAGE].mem_read &&
-             !pipeline[EX_STAGE].mem_write) {
-    // Skip MEM stage if not needed
-    memcpy(&pipeline[WB_STAGE], &pipeline[EX_STAGE], sizeof(PipelineReg));
-    pipeline[EX_STAGE].active = 0;
-  } else {
+  }else {
     pipeline[WB_STAGE].active = 0;
   }
 
@@ -420,39 +449,38 @@ void write_back() {
     registers[pipeline[WB_STAGE].rd] = pipeline[WB_STAGE].result;
   }
 }
-
 void detect_hazards() {
-  // Data hazards detection (RAW)
+  // Only detect hazards after the ID and EX stages have completed their second cycle
 
-  // Check if ID stage needs a value that's being produced in EX stage
-  if (pipeline[ID_STAGE].active && pipeline[EX_STAGE].active &&
-      pipeline[EX_STAGE].reg_write && pipeline[EX_STAGE].rd > 0) {
+  // Check if ID stage has completed its first cycle (since decoding happens in the second cycle)
+  if (pipeline[ID_STAGE].active && pipeline[ID_STAGE].cycles_in_stage == 2) {
 
-    // Check if rs1 in ID depends on rd in EX
-    if (pipeline[ID_STAGE].rs1 == pipeline[EX_STAGE].rd) {
-      // Forward from EX to ID
-      pipeline[ID_STAGE].rs1_value = pipeline[EX_STAGE].result;
-    }
+    // Check if EX stage is producing a value needed by ID
+    if (pipeline[EX_STAGE].active && pipeline[EX_STAGE].cycles_in_stage == 2 &&
+        pipeline[EX_STAGE].reg_write && pipeline[EX_STAGE].rd > 0) {
 
-    // Check if rs2 in ID depends on rd in EX
-    if (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd) {
-      // Forward from EX to ID
-      pipeline[ID_STAGE].rs2_value = pipeline[EX_STAGE].result;
-    }
-  }
+      // Check if rs1 in ID depends on rd in EX
+      if (pipeline[ID_STAGE].rs1 == pipeline[EX_STAGE].rd) {
+        // Forward from EX to ID
+        pipeline[ID_STAGE].rs1_value = pipeline[EX_STAGE].result;
+      }
 
-  // Check if ID stage needs a value that's being loaded from memory (LW in MEM
-  // stage)
-  if (pipeline[ID_STAGE].active && pipeline[MEM_STAGE].active &&
-      pipeline[MEM_STAGE].mem_read && pipeline[MEM_STAGE].rd > 0) {
+      // Check if rs2 in ID depends on rd in EX
+      if (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd) {
+        // Forward from EX to ID
+        pipeline[ID_STAGE].rs2_value = pipeline[EX_STAGE].result;
+      }
+        }
 
-    // Check if rs1 or rs2 in ID depends on rd in MEM
-    if (pipeline[ID_STAGE].rs1 == pipeline[MEM_STAGE].rd ||
-        pipeline[ID_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
-
-      // Stall the ID stage until the value is available
-      pipeline[ID_STAGE].stall_cycles = 1;
-      return;
+    // Check if ID stage needs a value that's being loaded from memory (LW in MEM stage)
+    if (pipeline[MEM_STAGE].active && pipeline[MEM_STAGE].mem_read && pipeline[MEM_STAGE].rd > 0) {
+      // Check if rs1 or rs2 in ID depends on rd in MEM
+      if (pipeline[ID_STAGE].rs1 == pipeline[MEM_STAGE].rd ||
+          pipeline[ID_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
+        // Stall the ID stage until the value is available
+        pipeline[ID_STAGE].stall_cycles = 1;
+        return;
+          }
     }
   }
 
@@ -467,7 +495,7 @@ void display_processor_state(int cycle) {
 
   printf("  Pipeline:\n");
   if (pipeline[IF_STAGE].active) {
-    printf("    IF: Instruction at address %d\n", pipeline[IF_STAGE].PC);
+    printf("    IF: Instruction %d\n", pipeline[IF_STAGE].PC + 1);
   } else {
     printf("    IF: Idle\n");
   }
@@ -478,6 +506,7 @@ void display_processor_state(int cycle) {
                       pipeline[ID_STAGE].rs1, pipeline[ID_STAGE].rs2,
                       pipeline[ID_STAGE].immediate, pipeline[ID_STAGE].shamt,
                       pipeline[ID_STAGE].address);
+    printf(" (cycle %d of 2)", pipeline[ID_STAGE].cycles_in_stage);
     if (pipeline[ID_STAGE].stall_cycles > 0) {
       printf(" (stalled)");
     }
@@ -492,6 +521,7 @@ void display_processor_state(int cycle) {
                       pipeline[EX_STAGE].rs1, pipeline[EX_STAGE].rs2,
                       pipeline[EX_STAGE].immediate, pipeline[EX_STAGE].shamt,
                       pipeline[EX_STAGE].address);
+    printf(" (cycle %d of 2)", pipeline[EX_STAGE].cycles_in_stage);
     printf("\n");
   } else {
     printf("    EX: Idle\n");
