@@ -136,7 +136,7 @@ int main() {
 
 void runPipeline() {
 
-    printf("--- Cycle %d ---", cycle);
+    printf("\033[1;31m--- Cycle %d ---\033[0m\n", cycle);
     //
     writeback();
     memory();
@@ -146,6 +146,7 @@ void runPipeline() {
 
     printPipeline();
     printRegistersMinimal();
+    //printMainMemoryMinimal();
 
 }
 
@@ -307,6 +308,7 @@ void writeback() {
         if (((pipeline.writebackPhaseInst >> 28 ) & 0xF) != 10 && ((pipeline.writebackPhaseInst >> 28) & 0xF ) != 11 &&
             ((pipeline.writebackPhaseInst >> 28 ) & 0xF )!= 7 && ((pipeline.writebackPhaseInst >> 28 ) & 0xF ) != 4) {
             registers[temporaryExecuteDestination] = temporaryExecuteResult;
+            printf("\nR%d set to %d\n", temporaryExecuteDestination, temporaryExecuteResult);
         }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 7) {
                 programCounter = temporaryExecuteResult;
         }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 4) {
@@ -477,10 +479,11 @@ void printMainMemory() {
 }
 
 void printMainMemoryMinimal(){
+    printf("----------------------------\nMain Memory:\n");
     for (int i = 0; i < MAIN_MEMORY_SIZE; i++){
         if (mainMemory[i] != 0){
             if (i < DATA_OFFSET){
-                printf("Index: %d, Value: 0x%08X\n",i, mainMemory[i]);
+                printf("Index: %d, Value: 0x%08X, Text: %s\n",i, mainMemory[i], getInstructionText(mainMemory[i]));
             } else {
                 printf("Index: %d, Value: %d\n",i, mainMemory[i]);
             }
@@ -490,7 +493,7 @@ void printMainMemoryMinimal(){
 
 void printRegisters() {
 
-    printf("Registers:\n");
+    printf("----------------------\nRegisters:\n");
     for (int i =0; i < REGISTER_COUNT; i++) {
         printf("R%d: %d: ", i, registers[i]);
         if ((i+1) % 4 != 0) printf(" ");
@@ -501,22 +504,23 @@ void printRegisters() {
 
 void printRegistersMinimal() {
 
-    printf("\n");
-    for (int i =0; i < 8; i++) {
-        printf("R%d: %d ", i, registers[i]);
+
+    for (int i =0; i < REGISTER_COUNT; i++) {
+        printf("\033[1;32mR%d: %d ", i, registers[i]);
         printf(" ");
+        if (i == 15) printf("\n");
     }
-    printf("\n");
+    printf("\n\033[0m");
 
 }
 
 void printPipeline() {
     printf("  PC: %d\n", programCounter-1);
-    printf("  IF:  %s\n", getInstructionText(pipeline.fetchPhaseInst));
+    printf("  \033[1;34mIF:  %s\n", getInstructionText(pipeline.fetchPhaseInst));
     printf("  ID:  %s\n", getInstructionText(pipeline.decodePhaseInst));
     printf("  EX:  %s\n", getInstructionText(pipeline.executePhaseInst));
     printf("  MEM: %s\n", getInstructionText(pipeline.memoryPhaseInst));
-    printf("  WB:  %s\n", getInstructionText(pipeline.writebackPhaseInst));
+    printf("  WB:  %s\n\033[0m", getInstructionText(pipeline.writebackPhaseInst));
 }
 
 void printRInstruction(int instruction) {
