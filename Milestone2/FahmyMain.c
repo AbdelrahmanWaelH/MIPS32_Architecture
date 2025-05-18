@@ -63,6 +63,7 @@ bool temporaryShouldBranch = 0;
 
 char* filepath = "../FahmyCodeTest";
 int cycle = 1;
+bool fetchReady = true;
 
 
 
@@ -129,6 +130,7 @@ int main() {
     while (!pipelineDone()) {
         runPipeline();
         cycle++;
+        if (cycle == 100) break;
     }
 
     printRegisters();
@@ -151,11 +153,13 @@ void runPipeline() {
 }
 
 void fetch() {
-    if (cycle % 2 == 1) {
+    if (fetchReady) {
         pipeline.fetchPhaseInst = mainMemory[programCounter];
         programCounter++;
+        fetchReady = false;
     }else {
         pipeline.fetchPhaseInst = 0;
+        fetchReady = true;
     }
 }
 
@@ -179,6 +183,8 @@ void decode() {
         pipeline.decodedInstructionFields.r3         = (pipeline.decodePhaseInst >> 13) & 0x1F;
         pipeline.decodedInstructionFields.shamt      = pipeline.decodePhaseInst & 0x1FFF;
         pipeline.decodedInstructionFields.immediate  = pipeline.decodePhaseInst & 0x3FFFF;
+        if ((pipeline.decodedInstructionFields.immediate & 0x20000) >> 17 == 1)
+            pipeline.decodedInstructionFields.immediate |= 0xFFFC0000; // Make it negative
         pipeline.decodedInstructionFields.address    = pipeline.decodePhaseInst & 0xFFFFFFF;
 
         pipeline.decodeCyclesRemaining--;
@@ -187,6 +193,8 @@ void decode() {
 }
 
 void execute() {
+
+    if (pipeline.executePhaseInst == 0) pipeline.executeCyclesRemaining = 0;
 
     if (pipeline.decodePhaseInst == 0 && pipeline.executePhaseInst == 0) return;
 
@@ -403,7 +411,7 @@ void parseTextInstruction(){
 
             binaryInstruction |= reg1 << 23;
             binaryInstruction |= reg2 << 18;
-            binaryInstruction |= immediateValue;
+            binaryInstruction |= immediateValue & 0x3FFFF;
 
         }
         mainMemory[i] = binaryInstruction;
@@ -536,12 +544,14 @@ char* getInstructionText(int instruction) {
         return instructionText;
     }
 
-    int opcode = (instruction & 0xF0000000) >> 28;
+    int opcode = ((instruction & 0xF0000000) >> 28) & 0xF;
     int r1 = (instruction & 0x0F800000) >> 23;
     int r2 = (instruction & 0x007C0000) >> 18;
     int r3 = (instruction & 0x0003E000) >> 13;
     int shamt = (instruction & 0x00001FFF);
     int imm = (instruction & 0x0003FFFF);
+    if ((imm & 0x20000) >> 17 == 1)
+        imm |= 0xFFFC0000; // Make it negative
     int address = (instruction & 0x0FFFFFFF);
 
     switch(opcode) {
