@@ -19,28 +19,21 @@ struct DecodedInstructionFields {
     int shamt;
     int immediate;
     int address;
-
+    int r1val; 
+    int r2val;
+    int r3val;
 };
 
 struct Pipeline {
+    struct DecodedInstructionFields decodedInstructionFields;
     int fetchPhaseInst;
     int decodePhaseInst;
-
-    struct DecodedInstructionFields decodedInstructionFields;
-
     int executePhaseInst;
     int memoryPhaseInst;
     int writebackPhaseInst;
-
     int decodeCyclesRemaining;
     int executeCyclesRemaining;
-
 };
-
-struct InstructionParts {
-    int opcode, r1, r2, r3, imm, shamt, address;
-};
-
 
 
 void parseTextInstruction(); // Parses the text instructions into their binary representation.
@@ -176,7 +169,6 @@ void decode() {
 
         pipeline.decodeCyclesRemaining = 1;
     }else {
-
         pipeline.decodedInstructionFields.opcode     = (pipeline.decodePhaseInst >> 28) & 0xF;
         pipeline.decodedInstructionFields.r1         = (pipeline.decodePhaseInst >> 23) & 0x1F;
         pipeline.decodedInstructionFields.r2         = (pipeline.decodePhaseInst >> 18) & 0x1F;
@@ -186,7 +178,9 @@ void decode() {
         if ((pipeline.decodedInstructionFields.immediate & 0x20000) >> 17 == 1)
             pipeline.decodedInstructionFields.immediate |= 0xFFFC0000; // Make it negative
         pipeline.decodedInstructionFields.address    = pipeline.decodePhaseInst & 0xFFFFFFF;
-
+        pipeline.decodedInstructionFields.r1val = registers[pipeline.decodedInstructionFields.r1];
+        pipeline.decodedInstructionFields.r2val = registers[pipeline.decodedInstructionFields.r2];
+        pipeline.decodedInstructionFields.r3val = registers[pipeline.decodedInstructionFields.r3];
         pipeline.decodeCyclesRemaining--;
     }
 
@@ -210,53 +204,53 @@ void execute() {
     }else {
         switch (pipeline.decodedInstructionFields.opcode) {
             case 0: //ADD
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] + registers[pipeline.decodedInstructionFields.r3];
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.r3val;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 1: //SUB
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] - registers[pipeline.decodedInstructionFields.r3];
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val - pipeline.decodedInstructionFields.r3val;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 2: //MULI
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] * pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val * pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 3: //ADDI
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] + pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 4: //BNE
                 temporaryExecuteResult = programCounter + 1 + pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = programCounter;
                 temporaryShouldBranch =
-                    registers[pipeline.decodedInstructionFields.r1] != registers[pipeline.decodedInstructionFields.r2] ? true : false;
+                pipeline.decodedInstructionFields.r1val != pipeline.decodedInstructionFields.r2val ? true : false;
                 break;
             case 5: //ANDI
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] & pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val & pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 6: //ORI
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] | pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val | pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
             case 7: //J
                 temporaryExecuteResult = (programCounter & 0xF0000000) | pipeline.decodedInstructionFields.address;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
-            case 8:
+            case 8: //SLL
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2 << pipeline.decodedInstructionFields.shamt;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
-            case 9:
+            case 9: //SRL
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2 >> pipeline.decodedInstructionFields.shamt;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 break;
-            case 10:
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] + pipeline.decodedInstructionFields.immediate;
+            case 10: //LW
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
                 //Must pass through memory phase
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
-            case 11:
-                temporaryExecuteResult = registers[pipeline.decodedInstructionFields.r2] + pipeline.decodedInstructionFields.immediate;
+            case 11: //SW
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
                 //Must pass through memory phase
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
             default:
@@ -278,9 +272,9 @@ void memory() {
 
         //We don't use decoded parts because next instruction is decoded and we lose the values of current instruction
         if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10)
-            registers[temporaryExecuteDestination] = mainMemory[temporaryExecuteResult];
+            temporaryExecuteResult = mainMemory[temporaryExecuteResult];
         if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11)
-            mainMemory[temporaryExecuteResult] = registers[temporaryExecuteDestination];
+            mainMemory[temporaryExecuteResult] = registers[temporaryExecuteDestination]; //not entirely correct, performs WB in memory stage
     }else {
         pipeline.memoryPhaseInst = 0;
     }
@@ -307,7 +301,9 @@ void writeback() {
                 programCounter = temporaryExecuteResult;
             }
 
-        }else {
+        } else if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10){
+            registers[temporaryExecuteDestination] = temporaryExecuteResult;
+        } else {
             pipeline.writebackPhaseInst = 0;
         }
 
@@ -317,9 +313,6 @@ void writeback() {
     }
     registers[0] = 0;
 }
-
-
-
 
 /* Parsing and Loading Methods */
 
@@ -481,7 +474,7 @@ void printRegisters() {
 void printRegistersMinimal() {
 
     printf("\n");
-    for (int i =0; i < 4; i++) {
+    for (int i =0; i < 8; i++) {
         printf("R%d: %d: ", i, registers[i]);
         printf(" ");
     }
