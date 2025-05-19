@@ -371,19 +371,17 @@ void memory() {
 void writeback() {
     //printf("WB PHASE: register number '%d' written with value '0x%08X', decimal '%d'\n", temporaryExecuteResult, mainMemory[temporaryExecuteResult], mainMemory[temporaryExecuteResult]);
 
-    if (temporaryExecuteDestination == 0) return;
-
     if (pipeline.writebackPhaseInst == 0 && pipeline.memoryPhaseInst == 0) return;
 
     if (pipeline.memoryPhaseInst != 0) {
         pipeline.writebackPhaseInst = pipeline.memoryPhaseInst;
 
         if (((pipeline.writebackPhaseInst >> 28 ) & 0xF) != 10 && ((pipeline.writebackPhaseInst >> 28) & 0xF ) != 11 &&
-            ((pipeline.writebackPhaseInst >> 28 ) & 0xF )!= 7 && ((pipeline.writebackPhaseInst >> 28 ) & 0xF ) != 4) {
+            ((pipeline.writebackPhaseInst >> 28 ) & 0xF )!= 7 && ((pipeline.writebackPhaseInst >> 28 ) & 0xF ) != 4  && temporaryExecuteDestination != 0) {
             registers[temporaryExecuteDestination] = temporaryExecuteResult;
             //MARK: REG print
             printf("\nWB PHASE: R%d set to %d\n", temporaryExecuteDestination, temporaryExecuteResult);
-        }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 7) {
+        }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 7 )  {
                 programCounter = temporaryExecuteResult;
                 isFlushing = false;
         }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 4) {
@@ -398,7 +396,7 @@ void writeback() {
             if (temporaryExecuteDestination > 0 && temporaryExecuteDestination < 32)
             registers[temporaryExecuteDestination] = temporaryExecuteResult;
         } else if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11) {
-
+            //haha lol you thought
         }
 
     }else {
