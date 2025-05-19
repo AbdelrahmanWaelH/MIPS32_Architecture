@@ -1,747 +1,694 @@
 #include "FileReader.h"
-#include <ctype.h>
-#include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdbool.h>
 
-// Define opcodes
-#define ADD 0
-#define SUB 1
-#define MULI 2
-#define ADDI 3
-#define BNE 4
-#define ANDI 5
-#define ORI 6
-#define J 7
-#define SLL 8
-#define SRL 9
-#define LW 10
-#define SW 11
+#define MAIN_MEMORY_SIZE 2048
+#define WORD_SIZE 32
+#define REGISTER_COUNT 32
+#define MAX_LINES 64
+#define MAX_INSTRUCTION_TOKENS 256
+#define DATA_OFFSET 1024
 
-// Define instruction types
-#define R_TYPE 0
-#define I_TYPE 1
-#define J_TYPE 2
+struct DecodedInstructionFields {
 
-// Define pipeline stages
-#define IF_STAGE 0
-#define ID_STAGE 1
-#define EX_STAGE 2
-#define MEM_STAGE 3
-#define WB_STAGE 4
+    int opcode;
+    int r1;
+    int r2;
+    int r3;
+    int shamt;
+    int immediate;
+    int address;
+    int r1val; 
+    int r2val;
+    int r3val;
+};
 
-// Processor components
-uint32_t memory[2048];  // 2048 words (32 bits each)
-uint32_t registers[32]; // 31 GPRs + 1 Zero register
-uint32_t PC;            // Program Counter
+struct Pipeline {
+    struct DecodedInstructionFields decodedInstructionFields;
+    int fetchPhaseInst;
+    int decodePhaseInst;
+    int executePhaseInst;
+    int memoryPhaseInst;
+    int writebackPhaseInst;
+    int decodeCyclesRemaining;
+    int executeCyclesRemaining;
+};
 
-// Pipeline registers
-typedef struct {
-  int active;           // Is this pipeline stage active?
-  uint32_t instruction; // The instruction being processed
-  uint32_t PC;          // PC value for this instruction
-  int opcode;           // Instruction opcode
-  int rs1;              // Source register 1
-  int rs2;              // Source register 2
-  int rd;               // Destination register
-  int immediate;        // Immediate value
-  int shamt;            // Shift amount
-  int address;          // Jump address
-  uint32_t rs1_value;   // Value of source register 1
-  uint32_t rs2_value;   // Value of source register 2
-  uint32_t result;      // Result of operation
-  int instr_type;       // Instruction type (R, I, J)
-  int mem_read;         // Does this instruction read memory?
-  int mem_write;        // Does this instruction write memory?
-  int reg_write;        // Does this instruction write to a register?
-  int branch_taken;     // Was a branch taken?
-  int mem_address;      // Memory address to access
-  int stall_cycles;     // Number of cycles to stall
-} PipelineReg;
 
-PipelineReg pipeline[5]; // One for each stage
+void parseTextInstruction(); // Parses the text instructions into their binary representation.
+void readFileToMemory(char* filepath);
+void initRegisters();
+void initMemory();
+void initPipeline();
+void runPipeline();
+void printMainMemoryMinimal();
 
-// Forward declarations
-void initialize();
-void fetch_instruction();
-void decode_instruction();
-void execute_instruction();
-void memory_access();
-void write_back();
-void detect_hazards();
-void display_processor_state(int cycle);
-void print_instruction(int opcode, int rd, int rs1, int rs2, int imm, int shamt,
-                       int addr);
-int load_program_from_file(const char *filename);
+char lines[MAX_LINES][MAX_INSTRUCTION_TOKENS]; //An array to hold the text instructions after reading from file
+int lineCount = 0;
 
-// Helper function to get opcode from mnemonic
-int get_opcode(const char *mnemonic) {
-  if (strcmp(mnemonic, "ADD") == 0)
-    return ADD;
-  if (strcmp(mnemonic, "SUB") == 0)
-    return SUB;
-  if (strcmp(mnemonic, "MULI") == 0)
-    return MULI;
-  if (strcmp(mnemonic, "ADDI") == 0)
-    return ADDI;
-  if (strcmp(mnemonic, "BNE") == 0)
-    return BNE;
-  if (strcmp(mnemonic, "ANDI") == 0)
-    return ANDI;
-  if (strcmp(mnemonic, "ORI") == 0)
-    return ORI;
-  if (strcmp(mnemonic, "J") == 0)
-    return J;
-  if (strcmp(mnemonic, "SLL") == 0)
-    return SLL;
-  if (strcmp(mnemonic, "SRL") == 0)
-    return SRL;
-  if (strcmp(mnemonic, "LW") == 0)
-    return LW;
-  if (strcmp(mnemonic, "SW") == 0)
-    return SW;
-  return -1; // Invalid mnemonic
-}
-const char *program_file = "../FahmyCodeTest";
+int mainMemory[MAIN_MEMORY_SIZE];
+int registers[REGISTER_COUNT];
+int programCounter = 0;
+struct Pipeline pipeline;
+int temporaryExecuteResult = 0;
+int temporaryExecuteDestination = 0;
+int temporaryStoreSource = 0;
 
-// Helper function to parse register number
-int parse_register(const char *reg_str) {
-  // Skip 'R' prefix
-  if (reg_str[0] == 'R' || reg_str[0] == 'r') {
-    return atoi(reg_str + 1);
-  }
-  return -1; // Invalid register
+bool isFlushing = 0;
+bool temporaryShouldBranch = 0;
+bool isForwarding = 0;
+int forwardingDestination = 0;
+
+char* filepath = "../testCode";
+int cycle = 1;
+bool fetchReady = true;
+
+
+
+void initRegisters(){
+    for(int i = 0; i < REGISTER_COUNT; i++)
+        registers[i] = 0;
 }
 
-bool check_running(int total_instructions) {
-  return PC < total_instructions || pipeline[0].active || pipeline[1].active ||
-         pipeline[2].active || pipeline[3].active || pipeline[4].active;
+void initMemory(){
+    for(int i = 0; i < MAIN_MEMORY_SIZE; i++)
+        mainMemory[i] = 0;
+}
+
+void initPipeline() {
+    pipeline.fetchPhaseInst = 0;
+
+    pipeline.decodePhaseInst = 0;
+    pipeline.decodedInstructionFields.opcode = 0;
+    pipeline.decodedInstructionFields.r1 = 0;
+    pipeline.decodedInstructionFields.r2 = 0;
+    pipeline.decodedInstructionFields.r3 = 0;
+    pipeline.decodedInstructionFields.shamt = 0;
+    pipeline.decodedInstructionFields.immediate = 0;
+    pipeline.decodedInstructionFields.address = 0;
+
+    pipeline.executePhaseInst = 0;
+    pipeline.memoryPhaseInst = 0;
+    pipeline.writebackPhaseInst = 0;
+
+    pipeline.decodeCyclesRemaining = 0;
+    pipeline.executeCyclesRemaining = 0;
+
+}
+
+
+
+void fetch();
+void decode();
+void execute();
+void memory();
+void writeback();
+void runPipeline();
+
+void printMainMemory();
+void printPipeline();
+void printRegisters();
+void printRegistersMinimal();
+
+bool pipelineDone() {
+    return pipeline.fetchPhaseInst == 0 &&
+        pipeline.decodePhaseInst == 0 &&
+        pipeline.executePhaseInst == 0 &&
+        pipeline.memoryPhaseInst == 0 &&
+        pipeline.writebackPhaseInst == 0;
 }
 
 int main() {
-  initialize();
-  int total_instructions = load_program_from_file(program_file);
+    readFileToMemory(filepath);
+    parseTextInstruction();
 
-  if (total_instructions <= 0) {
-    printf("Error loading program or no instructions found.\n");
-    return 1;
-  }
 
-  int cycle = 1;
-  int instructions_executed = 0;
-
-  printf("Program loaded with %d instructions\n", total_instructions);
-
-  // Calculate total cycles: 7 + ((n - 1) * 2)
-  int total_cycles = 7 + ((total_instructions - 1) * 2);
-  printf("Estimated total cycles: %d\n\n", total_cycles);
-
-  // Run the simulation
-  while (check_running(total_instructions)) {
-    printf("Cycle %d:\n", cycle);
-
-    // Detect and resolve hazards first
-    detect_hazards();
-
-    // Execute pipeline stages (in reverse to prevent overwriting)
-    if (cycle % 2 == 1) { // Odd cycles: IF, ID, EX, WB
-      write_back();
-      execute_instruction();
-      decode_instruction();
-      fetch_instruction();
-    } else { // Even cycles: ID, EX, MEM, WB
-      write_back();
-      memory_access();
-      execute_instruction();
-      decode_instruction();
-    }
-
-    // Display state after this cycle
-    display_processor_state(cycle);
-
-    // Count completed instructions
-    if (pipeline[WB_STAGE].active) {
-      instructions_executed++;
-    }
-
+    runPipeline();
     cycle++;
-  }
-
-  printf("\nSimulation completed in %d cycles.\n", cycle - 1);
-  printf("Final register values:\n");
-  for (int i = 0; i < 32; i++) {
-    if (registers[i] != 0) {
-      printf("R%d = %d (0x%08X)\n", i, registers[i], registers[i]);
+    while (!pipelineDone()) {
+        runPipeline();
+        cycle++;
+        if (cycle == 100) break;
     }
-  }
 
-  return 0;
+    printRegisters();
+    printMainMemoryMinimal();
 }
 
-void initialize() {
-  // Clear memory
-  memset(memory, 0, sizeof(memory));
+void runPipeline() {
 
-  // Clear registers
-  memset(registers, 0, sizeof(registers));
+    printf("\033[1;31m--- Cycle %d ---\033[0m\n", cycle);
+    //
+    writeback();
+    memory();
+    execute();
+    decode();
+    fetch();
 
-  // Initialize PC to 0
-  PC = 0;
+    printPipeline();
+    printRegistersMinimal();
+    //printMainMemoryMinimal();
 
-  // Initialize pipeline registers
-  for (int i = 0; i < 5; i++) {
-    memset(&pipeline[i], 0, sizeof(PipelineReg));
-  }
 }
 
-void fetch_instruction() {
-  // Only fetch if we haven't reached the end of program
-  if (PC < 1024 && memory[PC] != 0) {
-    pipeline[IF_STAGE].active = 1;
-    pipeline[IF_STAGE].instruction = memory[PC];
-    pipeline[IF_STAGE].PC = PC;
-
-    // Increment PC for next instruction
-    PC++;
-  } else {
-    pipeline[IF_STAGE].active = 0;
-  }
+void flushPipeline() {
+    pipeline.fetchPhaseInst = 0;
+    pipeline.decodePhaseInst = 0;
+    pipeline.decodeCyclesRemaining = 0;
+    isFlushing = true;
 }
 
-void decode_instruction() {
-  // Move instruction from IF to ID
-  if (pipeline[IF_STAGE].active) {
-    memcpy(&pipeline[ID_STAGE], &pipeline[IF_STAGE], sizeof(PipelineReg));
-    pipeline[IF_STAGE].active = 0;
+void checkForwarding() {
 
-    uint32_t instr = pipeline[ID_STAGE].instruction;
-    pipeline[ID_STAGE].opcode = (instr >> 28) & 0xF; // First 4 bits
 
-    // Determine instruction type and decode fields
-    switch (pipeline[ID_STAGE].opcode) {
-    case ADD:
-    case SUB:
-    case SLL:
-    case SRL:
-      // R-type: opcode(4) | rd(5) | rs1(5) | rs2(5) | shamt(5) | unused(8)
-      pipeline[ID_STAGE].instr_type = R_TYPE;
-      pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
-      pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
-      pipeline[ID_STAGE].rs2 = (instr >> 13) & 0x1F;
-      pipeline[ID_STAGE].shamt = (instr >> 8) & 0x1F;
-      pipeline[ID_STAGE].reg_write = 1;
-      break;
 
-    case MULI:
-    case ADDI:
-    case BNE:
-    case ANDI:
-    case ORI:
-    case LW:
-    case SW:
-      // I-type: opcode(4) | rd(5) | rs1(5) | immediate(18)
-      pipeline[ID_STAGE].instr_type = I_TYPE;
-      pipeline[ID_STAGE].rd = (instr >> 23) & 0x1F;
-      pipeline[ID_STAGE].rs1 = (instr >> 18) & 0x1F;
-      pipeline[ID_STAGE].immediate = instr & 0x3FFFF; // 18 bits
+    // //Compare execute dest. with decode srcs
+    // if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r2 && temporaryExecuteDestination == pipeline.decodedInstructionFields.r3) {
+    //     isForwarding = true;
+    //     forwardingDestination = pipeline.decodedInstructionFields.r2;
+    // }else if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r2) {
+    //     isForwarding = true;
+    //     forwardingDestination = pipeline.decodedInstructionFields.r2;
+    // }else if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r3) {
+    //     isForwarding = true;
+    //     forwardingDestination = pipeline.decodedInstructionFields.r3;
+    // }
 
-      // Sign extend the immediate value if needed
-      if ((pipeline[ID_STAGE].immediate & 0x20000) >> 17 == 1) {
-        pipeline[ID_STAGE].immediate |= 0xFFFC0000; // Sign extend to 32 bits
-      }
-
-      // Set flags for memory operations
-      if (pipeline[ID_STAGE].opcode == LW) {
-        pipeline[ID_STAGE].mem_read = 1;
-        pipeline[ID_STAGE].reg_write = 1;
-      } else if (pipeline[ID_STAGE].opcode == SW) {
-        pipeline[ID_STAGE].mem_write = 1;
-        pipeline[ID_STAGE].rs2 =
-            pipeline[ID_STAGE].rd; // For SW, "rd" is actually rs2
-        pipeline[ID_STAGE].rd = 0; // SW doesn't write to a register
-      } else if (pipeline[ID_STAGE].opcode == BNE) {
-        pipeline[ID_STAGE].rs2 =
-            pipeline[ID_STAGE].rd; // For BNE, "rd" is actually rs2
-        pipeline[ID_STAGE].rd = 0; // BNE doesn't write to a register
-      } else {
-        pipeline[ID_STAGE].reg_write = 1;
-      }
-      break;
-
-    case J:
-      // J-type: opcode(4) | address(28)
-      pipeline[ID_STAGE].instr_type = J_TYPE;
-      pipeline[ID_STAGE].address = instr & 0x0FFFFFFF; // 28 bits
-      break;
+    if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r1 && temporaryExecuteDestination != 0) {
+        isForwarding = true;
+        forwardingDestination = pipeline.decodedInstructionFields.r1;
     }
 
-    // Read register values
-    if (pipeline[ID_STAGE].rs1 > 0) {
-      pipeline[ID_STAGE].rs1_value = registers[pipeline[ID_STAGE].rs1];
+
+    if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r2 && temporaryExecuteDestination != 0) {
+        isForwarding = true;
+        forwardingDestination = pipeline.decodedInstructionFields.r2;
     }
 
-    if (pipeline[ID_STAGE].rs2 > 0) {
-      pipeline[ID_STAGE].rs2_value = registers[pipeline[ID_STAGE].rs2];
+    if (temporaryExecuteDestination == pipeline.decodedInstructionFields.r3 && temporaryExecuteDestination != 0) {
+        isForwarding = true;
+        forwardingDestination = pipeline.decodedInstructionFields.r3;
     }
-  }
+
+
+
 }
 
-void execute_instruction() {
-  // Move instruction from ID to EX
-  if (pipeline[ID_STAGE].active && pipeline[ID_STAGE].stall_cycles == 0) {
-    memcpy(&pipeline[EX_STAGE], &pipeline[ID_STAGE], sizeof(PipelineReg));
-    pipeline[ID_STAGE].active = 0;
-
-    // Execute based on opcode
-    switch (pipeline[EX_STAGE].opcode) {
-    case ADD:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].rs2_value;
-      break;
-
-    case SUB:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value - pipeline[EX_STAGE].rs2_value;
-      break;
-
-    case MULI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value * pipeline[EX_STAGE].immediate;
-      break;
-
-    case ADDI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value + pipeline[EX_STAGE].immediate;
-      break;
-
-    case BNE:
-      if (pipeline[EX_STAGE].rs1_value != pipeline[EX_STAGE].rs2_value) {
-        // Branch is taken
-        PC = pipeline[EX_STAGE].PC + 1 + pipeline[EX_STAGE].immediate;
-        pipeline[EX_STAGE].branch_taken = 1;
-
-        // Flush the pipeline
-        pipeline[IF_STAGE].active = 0;
-        pipeline[ID_STAGE].active = 0;
-      }
-      break;
-
-    case ANDI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value & pipeline[EX_STAGE].immediate;
-      break;
-
-    case ORI:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value | pipeline[EX_STAGE].immediate;
-      break;
-
-    case J:
-      // Jump: PC = PC[31:28] || ADDRESS
-      PC = (PC & 0xF0000000) | pipeline[EX_STAGE].address;
-
-      // Flush the pipeline
-      pipeline[IF_STAGE].active = 0;
-      pipeline[ID_STAGE].active = 0;
-      break;
-
-    case SLL:
-      pipeline[EX_STAGE].result = pipeline[EX_STAGE].rs1_value
-                                  << pipeline[EX_STAGE].shamt;
-      break;
-
-    case SRL:
-      pipeline[EX_STAGE].result =
-          pipeline[EX_STAGE].rs1_value >> pipeline[EX_STAGE].shamt;
-      break;
-
-    case LW:
-      pipeline[EX_STAGE].mem_address =
-          pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
-      break;
-
-    case SW:
-      pipeline[EX_STAGE].mem_address =
-          pipeline[EX_STAGE].rs2_value + pipeline[EX_STAGE].immediate + 1024;
-      break;
+void fetch() {
+    if (fetchReady && programCounter < lineCount && !isFlushing) {
+        pipeline.fetchPhaseInst = mainMemory[programCounter];
+        programCounter++;
+        fetchReady = false;
+    }else {
+        pipeline.fetchPhaseInst = 0;
+        fetchReady = true;
     }
-  }
+} //TODO: handle PC reaching 1024
+
+void decode() {
+
+    if (pipeline.fetchPhaseInst == 0 && pipeline.decodePhaseInst == 0) return;
+
+    if (pipeline.decodeCyclesRemaining == 0)
+        pipeline.decodePhaseInst = pipeline.fetchPhaseInst;
+        if (pipeline.decodePhaseInst == 0) return;
+
+
+    if (pipeline.decodeCyclesRemaining == 0) {
+
+        pipeline.decodeCyclesRemaining = 1;
+    }else {
+        pipeline.decodedInstructionFields.opcode     = (pipeline.decodePhaseInst >> 28) & 0xF;
+        pipeline.decodedInstructionFields.r1         = (pipeline.decodePhaseInst >> 23) & 0x1F;
+        pipeline.decodedInstructionFields.r2         = (pipeline.decodePhaseInst >> 18) & 0x1F;
+        pipeline.decodedInstructionFields.r3         = (pipeline.decodePhaseInst >> 13) & 0x1F;
+        pipeline.decodedInstructionFields.shamt      = pipeline.decodePhaseInst & 0x1FFF;
+        pipeline.decodedInstructionFields.immediate  = pipeline.decodePhaseInst & 0x3FFFF;
+        if ((pipeline.decodedInstructionFields.immediate & 0x20000) >> 17 == 1)
+            pipeline.decodedInstructionFields.immediate |= 0xFFFC0000; // Make it negative
+        pipeline.decodedInstructionFields.address    = pipeline.decodePhaseInst & 0xFFFFFFF;
+        pipeline.decodedInstructionFields.r1val = registers[pipeline.decodedInstructionFields.r1];
+        pipeline.decodedInstructionFields.r2val = registers[pipeline.decodedInstructionFields.r2];
+        pipeline.decodedInstructionFields.r3val = registers[pipeline.decodedInstructionFields.r3];
+
+        checkForwarding();
+
+        pipeline.decodeCyclesRemaining--;
+    }
+
 }
 
-void memory_access() {
-  // Move instruction from EX to MEM
-  if (pipeline[EX_STAGE].active) {
-    memcpy(&pipeline[MEM_STAGE], &pipeline[EX_STAGE], sizeof(PipelineReg));
-    pipeline[EX_STAGE].active = 0;
+void execute() {
 
-    // Memory operations
-    if (pipeline[MEM_STAGE].mem_read) {
-      // Load word
-      if (pipeline[MEM_STAGE].mem_address >= 0 &&
-          pipeline[MEM_STAGE].mem_address < 2048) {
-        pipeline[MEM_STAGE].result = memory[pipeline[MEM_STAGE].mem_address];
-      } else {
-        printf("Memory access error: address %d is out of bounds\n",
-               pipeline[MEM_STAGE].mem_address);
-      }
-    } else if (pipeline[MEM_STAGE].mem_write) {
-      // Store word
-      if (pipeline[MEM_STAGE].mem_address >= 0 &&
-          pipeline[MEM_STAGE].mem_address < 2048) {
-        memory[pipeline[MEM_STAGE].mem_address] = pipeline[MEM_STAGE].rs1_value;
-      } else {
-        printf("Memory access error: address %d is out of bounds\n",
-               pipeline[MEM_STAGE].mem_address);
-      }
-    }
-  }
-}
+    if (pipeline.executePhaseInst == 0) pipeline.executeCyclesRemaining = 0;
 
-void write_back() {
-  // Move instruction from MEM to WB (or from EX to WB if no MEM stage is
-  // active)
-  if (pipeline[MEM_STAGE].active) {
-    memcpy(&pipeline[WB_STAGE], &pipeline[MEM_STAGE], sizeof(PipelineReg));
-    pipeline[MEM_STAGE].active = 0;
-  } else if (pipeline[EX_STAGE].active && !pipeline[EX_STAGE].mem_read &&
-             !pipeline[EX_STAGE].mem_write) {
-    // Skip MEM stage if not needed
-    memcpy(&pipeline[WB_STAGE], &pipeline[EX_STAGE], sizeof(PipelineReg));
-    pipeline[EX_STAGE].active = 0;
-  } else {
-    pipeline[WB_STAGE].active = 0;
-  }
+    if (pipeline.decodePhaseInst == 0 && pipeline.executePhaseInst == 0) return;
 
-  // Write back to register file
-  if (pipeline[WB_STAGE].active && pipeline[WB_STAGE].reg_write &&
-      pipeline[WB_STAGE].rd > 0) {
-    registers[pipeline[WB_STAGE].rd] = pipeline[WB_STAGE].result;
-  }
-}
+    if (pipeline.executePhaseInst == 0 && pipeline.decodeCyclesRemaining != 0) return;
 
-void detect_hazards() {
-  // Data hazards detection (RAW)
+    if ( pipeline.executeCyclesRemaining == 0 && pipeline.decodeCyclesRemaining == 0)
+        pipeline.executePhaseInst = pipeline.decodePhaseInst;
 
-  // Check if ID stage needs a value that's being produced in EX stage
-  if (pipeline[ID_STAGE].active && pipeline[EX_STAGE].active &&
-      pipeline[EX_STAGE].reg_write && pipeline[EX_STAGE].rd > 0) {
+    if (pipeline.executeCyclesRemaining == 0) {
 
-    // Check if rs1 in ID depends on rd in EX
-    if (pipeline[ID_STAGE].rs1 == pipeline[EX_STAGE].rd) {
-      // Forward from EX to ID
-      pipeline[ID_STAGE].rs1_value = pipeline[EX_STAGE].result;
-    }
+        pipeline.executeCyclesRemaining = 1;
 
-    // Check if rs2 in ID depends on rd in EX
-    if (pipeline[ID_STAGE].rs2 == pipeline[EX_STAGE].rd) {
-      // Forward from EX to ID
-      pipeline[ID_STAGE].rs2_value = pipeline[EX_STAGE].result;
-    }
-  }
+    }else {
 
-  // Check if ID stage needs a value that's being loaded from memory (LW in MEM
-  // stage)
-  if (pipeline[ID_STAGE].active && pipeline[MEM_STAGE].active &&
-      pipeline[MEM_STAGE].mem_read && pipeline[MEM_STAGE].rd > 0) {
+        if (pipeline.decodedInstructionFields.r1 == forwardingDestination && isForwarding)
+            pipeline.decodedInstructionFields.r1val = temporaryExecuteResult;
+        if (pipeline.decodedInstructionFields.r2 == forwardingDestination && isForwarding)
+            pipeline.decodedInstructionFields.r2val = temporaryExecuteResult;
+        if (pipeline.decodedInstructionFields.r3 == forwardingDestination && isForwarding)
+            pipeline.decodedInstructionFields.r3val = temporaryExecuteResult;
 
-    // Check if rs1 or rs2 in ID depends on rd in MEM
-    if (pipeline[ID_STAGE].rs1 == pipeline[MEM_STAGE].rd ||
-        pipeline[ID_STAGE].rs2 == pipeline[MEM_STAGE].rd) {
+        switch (pipeline.decodedInstructionFields.opcode) {
+            case 0: //ADD
 
-      // Stall the ID stage until the value is available
-      pipeline[ID_STAGE].stall_cycles = 1;
-      return;
-    }
-  }
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.r3val;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
 
-  // Decrement stall cycles if still stalling
-  if (pipeline[ID_STAGE].stall_cycles > 0) {
-    pipeline[ID_STAGE].stall_cycles--;
-  }
-}
+                break;
+            case 1: //SUB
 
-void display_processor_state(int cycle) {
-  printf("  PC: %d\n", PC);
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val - pipeline.decodedInstructionFields.r3val;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
 
-  printf("  Pipeline:\n");
-  if (pipeline[IF_STAGE].active) {
-    printf("    IF: Instruction at address %d\n", pipeline[IF_STAGE].PC);
-  } else {
-    printf("    IF: Idle\n");
-  }
+                break;
+            case 2: //MULI
 
-  if (pipeline[ID_STAGE].active) {
-    printf("    ID: ");
-    print_instruction(pipeline[ID_STAGE].opcode, pipeline[ID_STAGE].rd,
-                      pipeline[ID_STAGE].rs1, pipeline[ID_STAGE].rs2,
-                      pipeline[ID_STAGE].immediate, pipeline[ID_STAGE].shamt,
-                      pipeline[ID_STAGE].address);
-    if (pipeline[ID_STAGE].stall_cycles > 0) {
-      printf(" (stalled)");
-    }
-    printf("\n");
-  } else {
-    printf("    ID: Idle\n");
-  }
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val * pipeline.decodedInstructionFields.r3val;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
+            case 3: //ADDI
 
-  if (pipeline[EX_STAGE].active) {
-    printf("    EX: ");
-    print_instruction(pipeline[EX_STAGE].opcode, pipeline[EX_STAGE].rd,
-                      pipeline[EX_STAGE].rs1, pipeline[EX_STAGE].rs2,
-                      pipeline[EX_STAGE].immediate, pipeline[EX_STAGE].shamt,
-                      pipeline[EX_STAGE].address);
-    printf("\n");
-  } else {
-    printf("    EX: Idle\n");
-  }
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
+            case 4: //BNE
+                temporaryExecuteResult = programCounter + 1 + pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteDestination = -1;
 
-  if (cycle % 2 == 0) { // Even cycles have MEM stage
-    if (pipeline[MEM_STAGE].active) {
-      printf("    MEM: ");
-      print_instruction(pipeline[MEM_STAGE].opcode, pipeline[MEM_STAGE].rd,
-                        pipeline[MEM_STAGE].rs1, pipeline[MEM_STAGE].rs2,
-                        pipeline[MEM_STAGE].immediate,
-                        pipeline[MEM_STAGE].shamt, pipeline[MEM_STAGE].address);
-      printf("\n");
-    } else {
-      printf("    MEM: Idle\n");
-    }
-  } else {
-    printf("    MEM: Disabled in odd cycles\n");
-  }
 
-  if (pipeline[WB_STAGE].active) {
-    printf("    WB: ");
-    print_instruction(pipeline[WB_STAGE].opcode, pipeline[WB_STAGE].rd,
-                      pipeline[WB_STAGE].rs1, pipeline[WB_STAGE].rs2,
-                      pipeline[WB_STAGE].immediate, pipeline[WB_STAGE].shamt,
-                      pipeline[WB_STAGE].address);
-    if (pipeline[WB_STAGE].reg_write && pipeline[WB_STAGE].rd > 0) {
-      printf(" (R%d = %d)", pipeline[WB_STAGE].rd, pipeline[WB_STAGE].result);
-    }
-    printf("\n");
-  } else {
-    printf("    WB: Idle\n");
-  }
-  printf("\n");
-}
+                temporaryShouldBranch =
+                    pipeline.decodedInstructionFields.r1val != pipeline.decodedInstructionFields.r2val ? true : false;
+                if (temporaryShouldBranch)
+                    flushPipeline();
+                break;
+            case 5: //ANDI
 
-void print_instruction(int opcode, int rd, int rs1, int rs2, int imm, int shamt,
-                       int addr) {
-  switch (opcode) {
-  case ADD:
-    printf("ADD R%d R%d R%d", rd, rs1, rs2);
-    break;
-  case SUB:
-    printf("SUB R%d R%d R%d", rd, rs1, rs2);
-    break;
-  case MULI:
-    printf("MULI R%d R%d %d", rd, rs1, imm);
-    break;
-  case ADDI:
-    printf("ADDI R%d R%d %d", rd, rs1, imm);
-    break;
-  case BNE:
-    printf("BNE R%d R%d %d", rs1, rs2, imm);
-    break;
-  case ANDI:
-    printf("ANDI R%d R%d %d", rd, rs1, imm);
-    break;
-  case ORI:
-    printf("ORI R%d R%d %d", rd, rs1, imm);
-    break;
-  case J:
-    printf("J %d", addr);
-    break;
-  case SLL:
-    printf("SLL R%d R%d %d", rd, rs1, shamt);
-    break;
-  case SRL:
-    printf("SRL R%d R%d %d", rd, rs1, shamt);
-    break;
-  case LW:
-    printf("LW R%d R%d %d", rd, rs1, imm);
-    break;
-  case SW:
-    printf("SW R%d R%d %d", rs2, rs1, imm);
-    break;
-  default:
-    printf("Unknown instruction");
-  }
-}
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val & pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
+            case 6: //ORI
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val | pipeline.decodedInstructionFields.immediate;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
+            case 7: //J
+                temporaryExecuteResult = (programCounter & 0xF0000000) | pipeline.decodedInstructionFields.address;
+                temporaryExecuteDestination = -1;
+                flushPipeline();
+                break;
+            case 8: //SLL
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val << pipeline.decodedInstructionFields.shamt;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
+            case 9: //SRL
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val >> pipeline.decodedInstructionFields.shamt;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
+            case 10: //LW
 
-// Function to load program from a text file
-int load_program_from_file(const char *filename) {
-  char *program_text = readFile((char *)filename);
-  if (program_text == NULL) {
-    return 0;
-  }
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
+                temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                break;
+            case 11: //SW
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
+                temporaryStoreSource = pipeline.decodedInstructionFields.r1;
+                temporaryExecuteDestination = -1;
 
-  char *line = strtok(program_text, "\r\n");
-  int instruction_count = 0;
-
-  while (line != NULL && instruction_count < 1024) {
-    char mnemonic[10] = {0};
-    char operands[50] = {0};
-    int result = sscanf(line, "%s %[^\n]", mnemonic, operands);
-
-    if (result >= 1) {
-      // Convert mnemonic to uppercase
-      for (int i = 0; mnemonic[i]; i++) {
-        mnemonic[i] = toupper(mnemonic[i]);
-      }
-
-      int opcode = get_opcode(mnemonic);
-      if (opcode == -1) {
-        printf("Invalid instruction mnemonic: %s\n", mnemonic);
-        line = strtok(NULL, "\r\n");
-        continue;
-      }
-
-      uint32_t instruction = 0;
-      // Set opcode (4 bits at positions 31-28)
-      instruction |= (opcode << 28);
-
-      // Parse operands based on instruction type
-      switch (opcode) {
-      case ADD:
-      case SUB: {
-        // R-type with 3 registers
-        char reg1[5], reg2[5], reg3[5];
-        if (sscanf(operands, "%s %s %s", reg1, reg2, reg3) == 3) {
-          int rd = parse_register(reg1);
-          int rs1 = parse_register(reg2);
-          int rs2 = parse_register(reg3);
-
-          if (rd >= 0 && rs1 >= 0 && rs2 >= 0) {
-            instruction |= (rd << 23);  // rd at positions 27-23
-            instruction |= (rs1 << 18); // rs1 at positions 22-18
-            instruction |= (rs2 << 13); // rs2 at positions 17-13
-          } else {
-            printf("Invalid register in instruction: %s %s\n", mnemonic,
-                   operands);
-            line = strtok(NULL, "\r\n");
-            continue;
-          }
-        } else {
-          printf("Invalid operands for %s: %s\n", mnemonic, operands);
-          line = strtok(NULL, "\r\n");
-          continue;
+                break;
+            default:
+                break;
         }
-        break;
-      }
 
-      case SLL:
-      case SRL: {
-        // R-type with 2 registers and shift amount
-        char reg1[5], reg2[5];
-        int shift;
-        if (sscanf(operands, "%s %s %d", reg1, reg2, &shift) == 3) {
-          int rd = parse_register(reg1);
-          int rs1 = parse_register(reg2);
 
-          if (rd >= 0 && rs1 >= 0) {
-            instruction |= (rd << 23);   // rd at positions 27-23
-            instruction |= (rs1 << 18);  // rs1 at positions 22-18
-            instruction |= (0 << 13);    // rs2 = 0 for shift instructions
-            instruction |= (shift << 8); // shamt at positions 12-8
-          } else {
-            printf("Invalid register in instruction: %s %s\n", mnemonic,
-                   operands);
-            line = strtok(NULL, "\r\n");
-            continue;
-          }
-        } else {
-          printf("Invalid operands for %s: %s\n", mnemonic, operands);
-          line = strtok(NULL, "\r\n");
-          continue;
-        }
-        break;
-      }
-
-      case MULI:
-      case ADDI:
-      case ANDI:
-      case ORI:
-      case LW:
-      case SW: {
-        // I-type with 2 registers and immediate
-        char reg1[5], reg2[5];
-        int imm;
-        if (sscanf(operands, "%s %s %d", reg1, reg2, &imm) == 3) {
-          int rd = parse_register(reg1);
-          int rs1 = parse_register(reg2);
-
-          if (rd >= 0 && rs1 >= 0) {
-            instruction |= (rd << 23);      // rd at positions 27-23
-            instruction |= (rs1 << 18);     // rs1 at positions 22-18
-            instruction |= (imm & 0x3FFFF); // immediate (18 bits)
-          } else {
-            printf("Invalid register in instruction: %s %s\n", mnemonic,
-                   operands);
-            line = strtok(NULL, "\r\n");
-            continue;
-          }
-        } else {
-          printf("Invalid operands for %s: %s\n", mnemonic, operands);
-          line = strtok(NULL, "\r\n");
-          continue;
-        }
-        break;
-      }
-
-      case BNE: {
-        // BNE with 2 registers and immediate
-        char reg1[5], reg2[5];
-        int imm;
-        if (sscanf(operands, "%s %s %d", reg1, reg2, &imm) == 3) {
-          int rs1 = parse_register(reg1);
-          int rs2 = parse_register(reg2);
-
-          if (rs1 >= 0 && rs2 >= 0) {
-            instruction |=
-                (rs2 << 23); // rs2 at positions 27-23 (using rd field)
-            instruction |= (rs1 << 18);     // rs1 at positions 22-18
-            instruction |= (imm & 0x3FFFF); // immediate (18 bits)
-          } else {
-            printf("Invalid register in instruction: %s %s\n", mnemonic,
-                   operands);
-            line = strtok(NULL, "\r\n");
-            continue;
-          }
-        } else {
-          printf("Invalid operands for %s: %s\n", mnemonic, operands);
-          line = strtok(NULL, "\r\n");
-          continue;
-        }
-        break;
-      }
-
-      case J: {
-        // J-type with address
-        int address;
-        if (sscanf(operands, "%d", &address) == 1) {
-          instruction |= (address & 0x0FFFFFFF); // address (28 bits)
-        } else {
-          printf("Invalid operands for %s: %s\n", mnemonic, operands);
-          line = strtok(NULL, "\r\n");
-          continue;
-        }
-        break;
-      }
-      }
-
-      // Store the instruction in memory
-      memory[instruction_count++] = instruction;
-      printf("Loaded instruction %d: %s %s -> 0x%08X\n", instruction_count - 1,
-             mnemonic, operands, instruction);
+        isForwarding = false;
+        pipeline.executeCyclesRemaining--;
     }
 
-    line = strtok(NULL, "\r\n");
-  }
+}
 
-  free(program_text);
-  return instruction_count;
+void memory() {
+    if (pipeline.memoryPhaseInst == 0 && pipeline.executePhaseInst == 0) return;
+    if (pipeline.executeCyclesRemaining != 0 && pipeline.memoryPhaseInst == 0) return;
+
+
+    if (pipeline.executeCyclesRemaining == 0) {
+        pipeline.memoryPhaseInst = pipeline.executePhaseInst;
+        pipeline.executePhaseInst = 0;
+
+        //We don't use decoded parts because next instruction is decoded and we lose the values of current instruction
+        if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10)
+            temporaryExecuteResult = mainMemory[temporaryExecuteResult];
+        if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11)
+            mainMemory[temporaryExecuteResult] = registers[temporaryStoreSource]; //not entirely correct, performs WB in memory stage
+    }else {
+        pipeline.memoryPhaseInst = 0;
+    }
+
+
+}
+
+
+void writeback() {
+
+    if (temporaryExecuteDestination == 0) return;
+
+    if (pipeline.writebackPhaseInst == 0 && pipeline.memoryPhaseInst == 0) return;
+
+    if (pipeline.memoryPhaseInst != 0) {
+        pipeline.writebackPhaseInst = pipeline.memoryPhaseInst;
+
+        if (((pipeline.writebackPhaseInst >> 28 ) & 0xF) != 10 && ((pipeline.writebackPhaseInst >> 28) & 0xF ) != 11 &&
+            ((pipeline.writebackPhaseInst >> 28 ) & 0xF )!= 7 && ((pipeline.writebackPhaseInst >> 28 ) & 0xF ) != 4) {
+            registers[temporaryExecuteDestination] = temporaryExecuteResult;
+            printf("\nR%d set to %d\n", temporaryExecuteDestination, temporaryExecuteResult);
+        }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 7) {
+                programCounter = temporaryExecuteResult;
+                isFlushing = false;
+        }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 4) {
+
+            if (temporaryShouldBranch) {
+                programCounter = temporaryExecuteResult - 2;
+                isFlushing = false;
+
+            }
+
+        } else if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10){
+            if (temporaryExecuteDestination > 0 && temporaryExecuteDestination < 32)
+            registers[temporaryExecuteDestination] = temporaryExecuteResult;
+        } else if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11) {
+
+        }
+
+    }else {
+        pipeline.writebackPhaseInst = 0;
+
+    }
+    registers[0] = 0;
+}
+
+/* Parsing and Loading Methods */
+
+void parseTextInstruction(){
+
+    char tokens[4][10];
+
+    for(int i = 0; i < lineCount; i++){
+
+        //Get Tokens Here
+
+        int tokenIndex = 0;
+        char* token = strtok(lines[i], " ");
+        while(token != NULL){
+
+            strncpy(tokens[tokenIndex], token, 10);
+            tokenIndex++;
+            token = strtok(NULL, " ");
+        }
+
+        //Convert To Binary Format Here
+
+        char* opcode = tokens[0];
+        int binaryInstruction = 0;
+        int opcodeBin = 0;
+
+        if (strcmp(opcode, "ADD") == 0) {
+            opcodeBin = 0;
+        } else if (strcmp(opcode, "SUB") == 0) {
+            opcodeBin = 1;
+        } else if (strcmp(opcode, "MULI") == 0) {
+            opcodeBin = 2;
+        } else if (strcmp(opcode, "ADDI") == 0) {
+            opcodeBin = 3;
+        } else if (strcmp(opcode, "BNE") == 0) {
+            opcodeBin = 4;
+        } else if (strcmp(opcode, "ANDI") == 0) {
+            opcodeBin = 5;
+        } else if (strcmp(opcode, "ORI") == 0) {
+            opcodeBin = 6;
+        } else if (strcmp(opcode, "J") == 0) {
+            opcodeBin = 7;
+        } else if (strcmp(opcode, "SLL") == 0) {
+            opcodeBin = 8;
+            //TODO: Handle SHAMT
+
+            int shamt = atoi(tokens[3]);
+            binaryInstruction |= shamt;
+
+        } else if (strcmp(opcode, "SRL") == 0) {
+            opcodeBin = 9;
+            //TODO: Handle SHAMT
+            int shamt = atoi(tokens[3]);
+            binaryInstruction |= shamt;
+
+
+        } else if (strcmp(opcode, "LW") == 0) {
+            opcodeBin = 10;
+        } else if (strcmp(opcode, "SW") == 0) {
+            opcodeBin = 11;
+        } else {
+            opcodeBin = -1;
+        }
+
+        binaryInstruction |= opcodeBin  << 28;
+
+        int reg1;
+        int reg2;
+        int reg3;
+        int immediateValue;
+
+        if (opcodeBin == 0 || opcodeBin == 1 || opcodeBin == 8 || opcodeBin == 9) {
+            reg1 = atoi(tokens[1] + 1);
+            reg2 = atoi(tokens[2] + 1);
+
+            reg3 = atoi(tokens[3] + 1);
+            if(opcodeBin == 8 || opcodeBin == 9) reg3 = 0;
+
+            binaryInstruction |= reg1 << 23;
+            binaryInstruction |= reg2 << 18;
+            binaryInstruction |= reg3 << 13;
+
+        } else if (opcodeBin == 7) {
+            binaryInstruction |= atoi(tokens[1]);
+        } else {
+            reg1 = atoi(tokens[1] + 1);
+            reg2 = atoi(tokens[2] + 1);
+            immediateValue = atoi(tokens[3]);
+
+            binaryInstruction |= reg1 << 23;
+            binaryInstruction |= reg2 << 18;
+            binaryInstruction |= immediateValue & 0x3FFFF;
+
+        }
+        mainMemory[i] = binaryInstruction;
+    }
+}
+
+/* Reads text file and writes lines to array of strings*/
+void readFileToMemory(char* filepath){
+
+    char* textInstructions = readFile(filepath);
+    // printf("%s\n", textInstructions);
+    lineCount = 0;
+
+
+    char* token = strtok(textInstructions, "\n");
+    while(token != NULL && lineCount < MAX_LINES){
+        strncpy(lines[lineCount], token, MAX_INSTRUCTION_TOKENS - 1);
+        lines[lineCount][MAX_INSTRUCTION_TOKENS - 1] = '\0';  // Null-terminate to be safe
+
+        // Remove trailing \r if it exists
+        size_t len = strlen(lines[lineCount]);
+        if (len > 0 && lines[lineCount][len - 1] == '\r') {
+            lines[lineCount][len - 1] = '\0';
+        }
+
+        lines[lineCount][MAX_INSTRUCTION_TOKENS - 1] = '\0';
+        lineCount++;
+        token = strtok(NULL, "\n");
+    }
+
+    strncpy(lines[lineCount], "[END]", MAX_INSTRUCTION_TOKENS - 1);
+
+
+}
+
+void printRInstruction(int instruction);
+void printJInstruction(int instruction);
+void printIInstruction(int instruction);
+char* getInstructionText(int instruction);
+
+void printMainMemory() {
+
+    for (int i = 0; i < MAIN_MEMORY_SIZE; i++) {
+        int opcode = mainMemory[i] >> 28;
+        if (opcode == 0 || opcode == 1 || opcode == 8 || opcode == 9) {
+            printRInstruction(mainMemory[i]);
+        } else if (opcode == 7) {
+            printJInstruction(mainMemory[i]);
+        }else {
+            printIInstruction(mainMemory[i]);
+        }
+    }
+
+}
+
+void printMainMemoryMinimal(){
+    printf("----------------------------\nMain Memory:\n");
+    for (int i = 0; i < MAIN_MEMORY_SIZE; i++){
+        if (mainMemory[i] != 0){
+            if (i < DATA_OFFSET){
+                printf("Index: %d, Value: 0x%08X, Text: %s\n",i, mainMemory[i], getInstructionText(mainMemory[i]));
+            } else {
+                printf("Index: %d, Value: %d\n",i, mainMemory[i]);
+            }
+        }
+    }
+}
+
+void printRegisters() {
+
+    printf("----------------------\nRegisters:\n");
+    for (int i =0; i < REGISTER_COUNT; i++) {
+        printf("R%d: %d: ", i, registers[i]);
+        if ((i+1) % 4 != 0) printf(" ");
+        else printf("\n");
+    }
+
+}
+
+void printRegistersMinimal() {
+
+
+    for (int i =0; i < REGISTER_COUNT; i++) {
+        printf("\033[1;32mR%d: %d ", i, registers[i]);
+        printf(" ");
+        if (i == 15) printf("\n");
+    }
+    printf("\n\033[0m");
+
+}
+
+void printPipeline() {
+    printf("  PC: %d\n", programCounter-1);
+    printf("  \033[1;34mIF:  %s\n", getInstructionText(pipeline.fetchPhaseInst));
+    printf("  ID:  %s\n", getInstructionText(pipeline.decodePhaseInst));
+    printf("  EX:  %s\n", getInstructionText(pipeline.executePhaseInst));
+    printf("  MEM: %s\n", getInstructionText(pipeline.memoryPhaseInst));
+    printf("  WB:  %s\n\033[0m", getInstructionText(pipeline.writebackPhaseInst));
+}
+
+void printRInstruction(int instruction) {
+    // Extract fields
+    int opcode     = (instruction >> 28) & 0xF;
+    int r1         = (instruction >> 23) & 0x1F;
+    int r2         = (instruction >> 18) & 0x1F;
+    int r3         = (instruction >> 13) & 0x1F;
+    int shamt      = instruction & 0x1FFF;
+    int immediate  = instruction & 0x3FFFF;
+    int address    = instruction & 0xFFFFFFF;
+
+    printf("%d %d %d %d %d\n", opcode, r1, r2, r3, shamt);
+
+}
+
+void printJInstruction(int instruction) {
+    int opcode     = (instruction >> 28) & 0xF;
+    int r1         = (instruction >> 23) & 0x1F;
+    int r2         = (instruction >> 18) & 0x1F;
+    int r3         = (instruction >> 13) & 0x1F;
+    int shamt      = instruction & 0x1FFF;
+    int immediate  = instruction & 0x3FFFF;
+    int address    = instruction & 0xFFFFFFF;
+
+    printf("%d %d \n", opcode, address);
+}
+
+void printIInstruction(int instruction) {
+    int opcode     = (instruction >> 28) & 0xF;
+    int r1         = (instruction >> 23) & 0x1F;
+    int r2         = (instruction >> 18) & 0x1F;
+    int r3         = (instruction >> 13) & 0x1F;
+    int shamt      = instruction & 0x1FFF;
+    int immediate  = instruction & 0x3FFFF;
+    int address    = instruction & 0xFFFFFFF;
+
+    printf("%d %d %d %d \n", opcode, r1, r2, immediate);
+}
+
+char* getInstructionText(int instruction) {
+    static char instructionText[50]; // Static buffer to hold the instruction text
+
+    if (instruction == 0) {
+        strcpy(instructionText, "-");
+        return instructionText;
+    }
+
+    int opcode = ((instruction & 0xF0000000) >> 28) & 0xF;
+    int r1 = (instruction & 0x0F800000) >> 23;
+    int r2 = (instruction & 0x007C0000) >> 18;
+    int r3 = (instruction & 0x0003E000) >> 13;
+    int shamt = (instruction & 0x00001FFF);
+    int imm = (instruction & 0x0003FFFF);
+    if ((imm & 0x20000) >> 17 == 1)
+        imm |= 0xFFFC0000; // Make it negative
+    int address = (instruction & 0x0FFFFFFF);
+
+    switch(opcode) {
+        case 0:  // ADD
+            sprintf(instructionText, "ADD R%d R%d R%d", r1, r2, r3);
+            break;
+        case 1:  // SUB
+            sprintf(instructionText, "SUB R%d R%d R%d", r1, r2, r3);
+            break;
+        case 2:  // MULI
+            sprintf(instructionText, "MULI R%d R%d %d", r1, r2, imm);
+            break;
+        case 3:  // ADDI
+            sprintf(instructionText, "ADDI R%d R%d %d", r1, r2, imm);
+            break;
+        case 4:  // BNE
+            sprintf(instructionText, "BNE R%d R%d %d", r1, r2, imm);
+            break;
+        case 5:  // ANDI
+            sprintf(instructionText, "ANDI R%d R%d %d", r1, r2, imm);
+            break;
+        case 6:  // ORI
+            sprintf(instructionText, "ORI R%d R%d %d", r1, r2, imm);
+            break;
+        case 7:  // J
+            sprintf(instructionText, "J %d", address);
+            break;
+        case 8:  // SLL
+            sprintf(instructionText, "SLL R%d R%d %d", r1, r2, shamt);
+            break;
+        case 9:  // SRL
+            sprintf(instructionText, "SRL R%d R%d %d", r1, r2, shamt);
+            break;
+        case 10: // LW
+            sprintf(instructionText, "LW R%d R%d %d", r1, r2, imm);
+            break;
+        case 11: // SW
+            sprintf(instructionText, "SW R%d R%d %d", r1, r2, imm);
+            break;
+        default:
+            sprintf(instructionText, "UNKNOWN");
+            break;
+    }
+
+    return instructionText;
 }

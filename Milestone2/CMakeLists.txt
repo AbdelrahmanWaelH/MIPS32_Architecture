@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD 99)
 
 # Add source files
 add_executable(CASimulator
-    FahmyMain.c
+    main.c
     FileReader.c
 #        run_tests.c
 
