@@ -271,23 +271,27 @@ void execute() {
 
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.r3val;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
-
+                printf("\nExecuted %d = %d + %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.r3val);
                 break;
             case 1: //SUB
 
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val - pipeline.decodedInstructionFields.r3val;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
-
+                printf("\nExecuted %d = %d - %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.r3val);
                 break;
             case 2: //MULI
 
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val * pipeline.decodedInstructionFields.r3val;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val * pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                printf("\nExecuted %d = %d * %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
+
                 break;
             case 3: //ADDI
 
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                printf("\nExecuted %d = %d + %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
+
                 break;
             case 4: //BNE
                 temporaryExecuteResult = programCounter + 1 + pipeline.decodedInstructionFields.immediate;
@@ -297,39 +301,49 @@ void execute() {
                 temporaryShouldBranch =
                     pipeline.decodedInstructionFields.r1val != pipeline.decodedInstructionFields.r2val ? true : false;
                 if (temporaryShouldBranch)
+                    printf("\nBNE Executed %d = 1 + %d + %d\n", temporaryExecuteResult, programCounter, pipeline.decodedInstructionFields.immediate);
                     flushPipeline();
                 break;
             case 5: //ANDI
 
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val & pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                printf("\nExecuted %d = %d AND %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
+
                 break;
             case 6: //ORI
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val | pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                printf("\nExecuted %d = %d OR %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
+
                 break;
             case 7: //J
                 temporaryExecuteResult = (programCounter & 0xF0000000) | pipeline.decodedInstructionFields.address;
                 temporaryExecuteDestination = -1;
+                printf("\nExecuted PC = %d CONCAT %d\n", (programCounter & 0xF0000000), pipeline.decodedInstructionFields.address);
                 flushPipeline();
                 break;
             case 8: //SLL
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val << pipeline.decodedInstructionFields.shamt;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                printf("\nExecuted %d = %d SHIFT LEFT %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.shamt);
                 break;
             case 9: //SRL
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val >> pipeline.decodedInstructionFields.shamt;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                printf("\nExecuted %d = %d SHIFT RIGHT %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.shamt);
                 break;
             case 10: //LW
 
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
+                printf("\nExecuted %d = %d + %d + 1024\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
                 break;
             case 11: //SW
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
                 temporaryStoreSource = pipeline.decodedInstructionFields.r1;
                 temporaryExecuteDestination = -1;
+                printf("\nExecuted %d = %d + %d + 1024\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
 
                 break;
             default:
