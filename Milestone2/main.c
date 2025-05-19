@@ -337,13 +337,13 @@ void execute() {
 
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
-                printf("\nExecuted %d = %d + %d + 1024\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
+                printf("\nExecuted %d = %d + %d + %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate, DATA_OFFSET);
                 break;
             case 11: //SW
                 temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
                 temporaryStoreSource = pipeline.decodedInstructionFields.r1;
                 temporaryExecuteDestination = -1;
-                printf("\nExecuted %d = %d + %d + 1024\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate);
+                printf("\nExecuted %d = %d + %d + %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate, DATA_OFFSET);
 
                 break;
             default:
