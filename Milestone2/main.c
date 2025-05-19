@@ -548,7 +548,7 @@ void printMainMemory() {
 }
 
 void printMainMemoryMinimal(){
-    printf("----------------------------\nMain Memory:\n");
+    printf("----------------------------\nMain Memory (non-zero):\n");
     for (int i = 0; i < MAIN_MEMORY_SIZE; i++){
         if (mainMemory[i] != 0){
             if (i < DATA_OFFSET){
