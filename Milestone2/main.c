@@ -158,6 +158,7 @@ void flushPipeline() {
     pipeline.decodePhaseInst = 0;
     pipeline.decodeCyclesRemaining = 0;
     isFlushing = true;
+    printf("\033[1;35m--- HAZARD DETECTED, FLUSHING PIPELINE ---\033[0m\n");
 }
 
 void checkForwarding() {
