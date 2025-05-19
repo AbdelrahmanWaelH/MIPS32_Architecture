@@ -559,7 +559,7 @@ void printMainMemoryMinimal(){
     for (int i = 0; i < MAIN_MEMORY_SIZE; i++){
         if (mainMemory[i] != 0){
             if (i < DATA_OFFSET){
-                printf("Index: %d, Value: 0x%08X, Text: %s\n",i, mainMemory[i], getInstructionText(mainMemory[i]));
+                printf("Index: %d, Value: 0x%08X, Instruction Mnemonic: %s\n",i, mainMemory[i], getInstructionText(mainMemory[i]));
             } else {
                 printf("Index: %d, Value: %d\n",i, mainMemory[i]);
             }
