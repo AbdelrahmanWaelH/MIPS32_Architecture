@@ -355,8 +355,11 @@ void memory() {
         //We don't use decoded parts because next instruction is decoded and we lose the values of current instruction
         if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 10)
             temporaryExecuteResult = mainMemory[temporaryExecuteResult];
-        if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11)
+        if (((pipeline.memoryPhaseInst >> 28) & 0xF) == 11){
             mainMemory[temporaryExecuteResult] = registers[temporaryStoreSource]; //not entirely correct, performs WB in memory stage
+            // MARK: memory print
+            printf("MEM PHASE: memory address '%d' written with value '0x%08X', decimal '%d'\n", temporaryExecuteResult, mainMemory[temporaryExecuteResult], mainMemory[temporaryExecuteResult]);
+        }
     }else {
         pipeline.memoryPhaseInst = 0;
     }
@@ -366,6 +369,7 @@ void memory() {
 
 
 void writeback() {
+    //printf("WB PHASE: register number '%d' written with value '0x%08X', decimal '%d'\n", temporaryExecuteResult, mainMemory[temporaryExecuteResult], mainMemory[temporaryExecuteResult]);
 
     if (temporaryExecuteDestination == 0) return;
 
@@ -377,7 +381,8 @@ void writeback() {
         if (((pipeline.writebackPhaseInst >> 28 ) & 0xF) != 10 && ((pipeline.writebackPhaseInst >> 28) & 0xF ) != 11 &&
             ((pipeline.writebackPhaseInst >> 28 ) & 0xF )!= 7 && ((pipeline.writebackPhaseInst >> 28 ) & 0xF ) != 4) {
             registers[temporaryExecuteDestination] = temporaryExecuteResult;
-            printf("\nR%d set to %d\n", temporaryExecuteDestination, temporaryExecuteResult);
+            //MARK: REG print
+            printf("\nWB PHASE: R%d set to %d\n", temporaryExecuteDestination, temporaryExecuteResult);
         }else if (((pipeline.writebackPhaseInst >> 28) & 0xF ) == 7) {
                 programCounter = temporaryExecuteResult;
                 isFlushing = false;
