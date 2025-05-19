@@ -138,17 +138,18 @@ int main() {
 }
 
 void runPipeline() {
-
-    printf("\033[1;31m--- Cycle %d ---\033[0m\n", cycle);
-    //
     writeback();
     memory();
     execute();
     decode();
     fetch();
 
+    if ( (pipeline.fetchPhaseInst != 0 || pipeline.decodePhaseInst != 0 || pipeline.executePhaseInst != 0
+    || pipeline.memoryPhaseInst != 0 || pipeline.writebackPhaseInst != 0)){
+    printf("\033[1;31m--- Cycle %d ---\033[0m\n", cycle);
     printPipeline();
     printRegistersMinimal();
+    }
     //printMainMemoryMinimal();
 
 }
@@ -592,7 +593,6 @@ void printPipeline() {
     printf("  MEM: %s\n", getInstructionText(pipeline.memoryPhaseInst));
     printf("  WB:  %s\n\033[0m", getInstructionText(pipeline.writebackPhaseInst));
 }
-
 void printRInstruction(int instruction) {
     // Extract fields
     int opcode     = (instruction >> 28) & 0xF;
