@@ -32,11 +32,14 @@ A 5-stage pipelined MIPS32 CPU implemented from scratch in C, as part of a colla
 - Shift: `SLL`, `SRL`
 - Branch: `BNE` , `J`
 
+### 📸 Demo pictures
+![Pipeline instructions & hazard handling](image.png)
+![Memory contents and completion of instructions](image-1.png)
+
 ## 🚀 Getting Started
 
 ### Build & Run
 in 'Milestone2/build' directory
-
 ```bash
 cmake ..
 make 
