@@ -61,7 +61,7 @@ bool temporaryShouldBranch = 0;
 bool isForwarding = 0;
 int forwardingDestination = 0;
 
-char* filepath = "../testCode";
+char* filepath = "../programInstructions.txt";
 int cycle = 1;
 bool fetchReady = true;
 
@@ -129,9 +129,7 @@ int main() {
     cycle++;
     while (!pipelineDone()) {
         runPipeline();
-        cycle++;
-        if (cycle == 100) break;
-    }
+        cycle++;    }
 
     printRegisters();
     printMainMemoryMinimal();
@@ -335,12 +333,12 @@ void execute() {
                 break;
             case 10: //LW
 
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
                 temporaryExecuteDestination = pipeline.decodedInstructionFields.r1;
                 printf("\nExecuted %d = %d + %d + %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate, DATA_OFFSET);
                 break;
             case 11: //SW
-                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate + DATA_OFFSET;
+                temporaryExecuteResult = pipeline.decodedInstructionFields.r2val + pipeline.decodedInstructionFields.immediate;
                 temporaryStoreSource = pipeline.decodedInstructionFields.r1;
                 temporaryExecuteDestination = -1;
                 printf("\nExecuted %d = %d + %d + %d\n", temporaryExecuteResult, pipeline.decodedInstructionFields.r2val, pipeline.decodedInstructionFields.immediate, DATA_OFFSET);
